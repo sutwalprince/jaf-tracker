@@ -1,0 +1,21 @@
+# Your own settings and anything secret: never commit these
+server/local.env
+*.env
+.env*
+config.json
+session.json
+state.json
+key
+*.key
+whatsapp.db*
+wa-outbox/
+wa-status.json
+jaf-web-data.json
+
+# Generated
+__pycache__/
+*.pyc
+*.log
+*.zip
+*.crx
+*.pem

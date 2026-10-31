@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open JAFs</title>
+  <link rel="icon" href="icons/icon48.png">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="">
+      <div>
+        <h1>Open JAFs</h1>
+        <p id="who" class="muted"></p>
+      </div>
+      <nav class="tabs"><a href="dashboard.html">My JAFs &amp; updates</a><a href="jafs.html" class="on">Open JAFs</a></nav>
+    </div>
+    <div class="actions">
+      <span id="status" class="pill"></span>
+      <button id="sync">Sync now</button>
+    </div>
+  </header>
+
+  <div id="login" class="banner danger" hidden>
+    <div><strong>Log in needed.</strong> <span id="loginMsg"></span></div>
+    <button id="loginBtn">Open placement portal</button>
+  </div>
+  <div id="error" class="banner warn" hidden></div>
+
+  <section id="stats" class="stats"></section>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search company, role or location…" aria-label="Search">
+    <div class="sortbar">
+      <div id="views" class="chips"></div>
+      <select id="sort" aria-label="Sort">
+        <option value="closing">Closing soonest</option>
+        <option value="ctc">Highest CTC</option>
+        <option value="newest">Newest</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="list" class="jaflist"></div>
+
+  <footer class="muted">Read-only: eligibility comes from the portal itself. Sign JAFs yourself on the portal; this page never signs or unsigns anything.</footer>
+  <script type="module" src="jafs.js"></script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "IITB JAF Tracker",
+  "version": "2.0.0",
+  "description": "Your IITB placement dashboard: signed JAFs, open JAFs and blog updates. Sends your login to your JAF Tracker server, which does the alerts.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "alarms",
+    "notifications",
+    "scripting",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://campus.placements.iitb.ac.in/*",
+    "https://sso.iitb.ac.in/*",
+    "https://*.ts.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://campus.placements.iitb.ac.in/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "IITB JAF Tracker"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

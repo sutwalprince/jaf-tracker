@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JAF Tracker</title>
+  <link rel="icon" href="icons/icon48.png">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="">
+      <div>
+        <h1>JAF Tracker</h1>
+        <p id="who" class="muted"></p>
+      </div>
+      <nav class="tabs"><a href="dashboard.html" class="on">My JAFs &amp; updates</a><a href="jafs.html">Open JAFs</a></nav>
+    </div>
+    <div class="actions">
+      <span id="status" class="pill"></span>
+      <button id="sync">Sync now</button>
+      <button id="readall" class="ghost">Mark all read</button>
+    </div>
+  </header>
+
+  <div id="login" class="banner danger" hidden>
+    <div><strong>Log in needed.</strong> <span id="loginMsg"></span></div>
+    <button id="loginBtn">Open placement portal</button>
+  </div>
+  <div id="error" class="banner warn" hidden></div>
+
+  <details id="srv" class="panel">
+    <summary>Send login to server <span id="srvState" class="muted"></span></summary>
+    <div class="panelbody">
+      <p class="muted">Whenever your login changes, sends your portal login and your IITB cookies (only for campus.placements.iitb.ac.in and sso.iitb.ac.in) to your own server over Tailscale, so the server can sync without a browser. Needs Tailscale on this laptop. Nothing else is sent, and never your password.</p>
+      <div class="form">
+        <label>Server address<input id="srvUrl" placeholder="https://jaf-tracker.….ts.net" autocomplete="off" spellcheck="false"></label>
+        <label>Server key
+          <span class="secret"><input id="srvKey" type="password" autocomplete="off" spellcheck="false"><button type="button" class="ghost reveal" data-reveal="srvKey">Show</button></span>
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" id="srvOn"> Send my login to the server</label>
+      <div class="formactions">
+        <button id="srvSave">Save</button>
+        <button id="srvSend" class="ghost">Send now</button>
+        <span id="srvMsg" class="muted"></span>
+      </div>
+    </div>
+  </details>
+
+  <section id="stats" class="stats"></section>
+  <section id="upcoming" class="upcoming" hidden></section>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search companies or updates…" aria-label="Search">
+    <div id="chips" class="chips"></div>
+  </div>
+
+  <main class="grid">
+    <section>
+      <h2>Updates <span id="feedCount" class="muted"></span></h2>
+      <div id="feed" class="feed"></div>
+    </section>
+    <section>
+      <h2>Your JAFs <button id="toggleHidden" class="linkbtn" hidden></button></h2>
+      <div id="jobs" class="jobs"></div>
+    </section>
+  </main>
+
+  <footer class="muted">Read-only: this extension only reads the portal and the placement blog. It never signs, unsigns or changes anything.</footer>
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
