@@ -1,10 +1,16 @@
-import { relevantPosts, money, fmtDate, ago, esc, shortName, when, until, roundsHtml } from './common.js';
+import { relevantPosts, money, fmtDate, ago, esc, shortName, when, until, roundsHtml, postKind, cleanTitle, dayLabel, timeOf } from './common.js';
+import { renderOpen, onOpenClick } from './jafs.js';
 
 const $ = id => document.getElementById(id);
 
 let state = {};
 let filterJob = null;
 let showHidden = false;
+let unreadOnly = false;
+// Three views on this page: "updates" (the blog feed, default), "jafs" (your signed JAFs), "open" (open JAFs).
+const currentView = () => ({ '#jafs': 'jafs', '#open': 'open' })[location.hash] || 'updates';
+let view = currentView();
+window.addEventListener('hashchange', () => { view = currentView(); render(); window.scrollTo({ top: 0 }); });
 const expanded = new Set();
 
 let formFilled = false;
@@ -61,11 +67,15 @@ function render() {
   const posts = relevantPosts(state.posts || [], jobs);
   const q = $('q').value.trim().toLowerCase();
 
+  // View
+  document.body.dataset.view = view;
+  document.querySelectorAll('.tabs [data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === view));
+  $('pageTitle').textContent = { jafs: 'My JAFs', open: 'Open JAFs' }[view] || 'Updates';
+  $('q').placeholder = view !== 'updates' ? 'Search company, role or location…' : 'Search companies or updates…';
+
   // Header
-  const me = state.me;
-  $('who').textContent = me ? [me.name, me.roll].filter(Boolean).join(' · ') : 'Not synced yet';
   const loggedOut = state.auth && !state.auth.ok;
-  $('status').textContent = state.syncing ? 'Syncing…' : loggedOut ? 'Logged out' : `Synced ${ago(state.lastSync)}`;
+  $('status').textContent = state.syncing ? 'Syncing…' : loggedOut ? 'Logged out' : state.lastSync ? `Synced ${ago(state.lastSync)}` : 'Not synced yet';
   $('status').classList.toggle('bad', !!loggedOut);
   $('sync').disabled = !!state.syncing;
   $('login').hidden = !loggedOut;
@@ -111,22 +121,41 @@ function render() {
 
   // Feed
   const selected = filterJob ? jobs.filter(j => j.company === byId[filterJob]?.company).map(j => j.id) : null;
+  // Unread-only keeps a post you've just opened on screen until you close it.
   const shown = posts.filter(p =>
+    (!unreadOnly || !read.has(p.id) || expanded.has(p.id)) &&
     (!selected || p.jobIds.some(id => selected.includes(id))) &&
     (!q || `${p.title} ${p.text}`.toLowerCase().includes(q)));
   $('feedCount').textContent = `(${shown.length})`;
-  $('feed').innerHTML = shown.length ? shown.map(p => postHtml(p, byId, read)).join('')
-    : `<div class="empty">${state.lastSync ? 'No updates match.' : 'Waiting for the first sync…'}</div>`;
+  let lastDay = null; // a heading before each day's posts
+  $('feed').innerHTML = shown.length ? shown.map(p => {
+    const day = dayLabel(p.date);
+    const head = day !== lastDay ? `<h3 class="dayhead">${esc(day)}</h3>` : '';
+    lastDay = day;
+    return head + postHtml(p, byId, read);
+  }).join('')
+    : `<div class="empty">${!state.lastSync ? 'Waiting for the first sync…' : unreadOnly ? 'No unread updates.' : 'No updates match.'}</div>`;
+  $('unreadOnly').textContent = unreadOnly ? 'Show all updates' : `Show unread updates (${unread})`;
+  $('tabUnread').hidden = !unread;
+  $('tabUnread').textContent = unread;
+  $('unreadOnly').setAttribute('aria-pressed', String(unreadOnly));
+  $('unreadOnly').classList.toggle('on', unreadOnly);
 
-  // Jobs
+  // Jobs: ones with a test/PPT coming up first (soonest first), then JAFs still open, then the rest by latest update.
+  const nextEvent = j => (state.events || []).filter(e => e.company === shortName(j.company) && new Date(e.at) > now - 2 * 3600000)
+    .sort((a, b) => new Date(a.at) - new Date(b.at))[0];
+  const rank = x => x.next ? [0, new Date(x.next.at)] : new Date(x.j.closesAt) > now ? [1, new Date(x.j.closesAt)]
+    : [2, -new Date(x.ups[0]?.date || x.j.signedAt)];
   const jobsShown = jobs
     .filter(j => !q || `${j.company} ${j.title} ${j.locations.join(' ')}`.toLowerCase().includes(q))
-    .map(j => ({ j, ups: posts.filter(p => p.jobIds.includes(j.id)) }))
-    .sort((a, b) => new Date(b.ups[0]?.date || b.j.signedAt) - new Date(a.ups[0]?.date || a.j.signedAt));
-  $('jobs').innerHTML = jobsShown.length ? jobsShown.map(({ j, ups }) => jobHtml(j, ups, selected, hidden.has(j.company))).join('')
+    .map(j => ({ j, ups: posts.filter(p => p.jobIds.includes(j.id)), next: nextEvent(j) }))
+    .sort((a, b) => { const [ra, ka] = rank(a), [rb, kb] = rank(b); return ra - rb || ka - kb; });
+  $('jobs').innerHTML = jobsShown.length ? jobsShown.map(({ j, ups, next }) => jobHtml(j, ups, selected, hidden.has(j.company), next)).join('')
     : `<div class="empty">${state.lastSync ? 'No JAFs match.' : 'Waiting for the first sync…'}</div>`;
   $('toggleHidden').hidden = !hidden.size;
   $('toggleHidden').textContent = showHidden ? 'Hide hidden companies' : `Show hidden (${hidden.size})`;
+
+  if (view === 'open') renderOpen(state, q); // its own stats and cards
 }
 
 function stat(label, value, sub, hot = false) {
@@ -137,12 +166,14 @@ function stat(label, value, sub, hot = false) {
 function postHtml(p, byId, read) {
   const cos = [...new Set(p.jobIds.map(id => shortName(byId[id]?.company || '')))].filter(Boolean);
   const open = expanded.has(p.id);
+  const [kind, kcls] = postKind(p.title);
+  const fullNames = [...new Set(p.jobIds.map(id => byId[id]?.company).filter(Boolean))];
   return `<article class="post ${read.has(p.id) ? '' : 'unread'} ${p.mentionsMe ? 'mention' : ''}">
     <button class="head" data-post="${esc(p.id)}" aria-expanded="${open}">
       <span class="dot"></span>
-      <span>
-        <span class="meta">${cos.length ? `<span class="co">${esc(cos.join(', '))}</span> · ` : ''}${esc(fmtDate(p.date))} · ${esc(ago(p.date))}</span><br>
-        <span class="title">${esc(p.title)}</span>
+      <span class="pmain">
+        <span class="meta"><span class="kind ${kcls}">${esc(kind)}</span>${cos.length ? `<span class="co">${esc(cos.join(', '))}</span>` : ''}<span class="time">${esc(timeOf(p.date))}</span></span>
+        <span class="title">${esc(cleanTitle(p.title, fullNames))}</span>
       </span>
       ${p.mentionsMe ? '<span class="badge">Mentions you</span>' : ''}
     </button>
@@ -150,7 +181,7 @@ function postHtml(p, byId, read) {
   </article>`;
 }
 
-function jobHtml(j, ups, selected, isHidden) {
+function jobHtml(j, ups, selected, isHidden, next) {
   const closed = new Date(j.closesAt) < Date.now();
   const latest = ups[0];
   return `<article class="job ${selected?.includes(j.id) ? 'on' : ''} ${isHidden ? 'muted-card' : ''}">
@@ -160,6 +191,7 @@ function jobHtml(j, ups, selected, isHidden) {
       <div><div class="company">${esc(shortName(j.company))}</div><div class="role">${esc(j.title)} · Job code ${esc(j.code)}</div></div>
       <div class="ctc">${esc(money(j.ctc, j.currency))}<small>CTC${j.gross != null && j.gross !== j.ctc ? ` · ${esc(money(j.gross, j.currency))} gross` : ''}</small></div>
     </div>
+    ${next ? `<a class="nextup" href="${esc(next.link)}" target="_blank" rel="noopener"><span>${next.icon}</span><span><b>${esc(next.kind)}</b> ${esc(when(next.at))}</span><span class="upleft">${new Date(next.at) > Date.now() ? esc(until(next.at)) : 'now'}</span></a>` : ''}
     <dl>
       <div><dt>Location</dt><dd>${esc(j.locations.join(', ') || '—')}</dd></div>
       <div><dt>CPI cutoff</dt><dd>${j.cpiCutoff ? esc(j.cpiCutoff) : 'None'}</dd></div>
@@ -168,7 +200,7 @@ function jobHtml(j, ups, selected, isHidden) {
     </dl>
     ${roundsHtml(j)}
     <button class="latest" data-filter="${j.id}">${latest
-      ? `${ups.length} update${ups.length === 1 ? '' : 's'} · latest: <b>${esc(latest.title)}</b> (${esc(ago(latest.date))})`
+      ? `${ups.length} update${ups.length === 1 ? '' : 's'} · latest: <b>${esc(cleanTitle(latest.title, [j.company]))}</b> (${esc(ago(latest.date))}) →`
       : 'No blog updates yet'}</button>
   </article>`;
 }
@@ -188,6 +220,7 @@ async function toggleHidden(company) {
 }
 
 document.addEventListener('click', e => {
+  if (view === 'open' && onOpenClick(e)) { render(); return; }
   const hide = e.target.closest('[data-hide]');
   if (hide) {
     toggleHidden(hide.dataset.hide);
@@ -209,6 +242,7 @@ document.addEventListener('click', e => {
   const f = e.target.closest('[data-filter]');
   if (f) {
     const id = f.dataset.filter ? Number(f.dataset.filter) : null;
+    if (view === 'jafs') { filterJob = id; location.hash = 'updates'; return; } // jump to that company's updates
     filterJob = filterJob === id ? null : id;
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -216,10 +250,12 @@ document.addEventListener('click', e => {
 });
 
 $('q').addEventListener('input', render);
+$('openSort').addEventListener('change', render);
 $('sync').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'sync' }));
 $('loginBtn').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'login' }));
-$('readall').addEventListener('click', () => {
-  markRead(relevantPosts(state.posts || [], visibleJobs().jobs).map(p => p.id));
+$('unreadOnly').addEventListener('click', () => {
+  unreadOnly = !unreadOnly;
+  render();
 });
 
 chrome.storage.onChanged.addListener(load);

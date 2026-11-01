@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "IITB JAF Tracker",
-  "version": "2.0.0",
+  "version": "2.3.3",
   "description": "Your IITB placement dashboard: signed JAFs, open JAFs and blog updates. Sends your login to your JAF Tracker server, which does the alerts.",
   "permissions": [
     "storage",

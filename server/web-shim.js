@@ -8,6 +8,7 @@
   let data = {};
   let read = [];
   let hidden = [];
+  let syncing = false;
 
   const readIds = () => read;
   // Hidden companies, shared by all your devices.
@@ -28,14 +29,31 @@
       if (r.ok) read = (await r.json()).readIds;
     } catch { /* offline: keep what we have */ }
   };
-  const load = async () => {
-    try {
-      const r = await fetch('data.json', { cache: 'no-store' });
-      if (r.ok) data = await r.json();
-    } catch { /* keep the last data we had */ }
-    await Promise.all([syncRead(), syncHidden()]);
+  // The last data seen is kept on this device, so pages draw instantly and then refresh in the background.
+  const CACHE = 'jafWebCache';
+  const saveCache = () => {
+    try { localStorage.setItem(CACHE, JSON.stringify({ data, read, hidden })); } catch { /* storage full or blocked */ }
   };
-  const ready = load();
+  const load = async () => {
+    const getData = (async () => {
+      try {
+        const r = await fetch('data.json', { cache: 'no-cache' });
+        if (r.ok) data = await r.json();
+      } catch { /* keep the last data we had */ }
+    })();
+    await Promise.all([getData, syncRead(), syncHidden()]);
+    saveCache();
+  };
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(CACHE) || 'null'); } catch { /* no cache */ }
+  let ready;
+  if (cached?.data) {
+    ({ data, read = [], hidden = [] } = cached);
+    ready = Promise.resolve();
+    setTimeout(() => refresh(), 0); // fetch fresh data now, redraw if anything changed
+  } else {
+    ready = load();
+  }
   const notify = () => listeners.forEach(fn => fn({}));
 
   document.documentElement.classList.add('web');
@@ -45,7 +63,7 @@
       local: {
         async get(keys) {
           await ready;
-          const all = { ...data, readIds: readIds(), hiddenCompanies: hidden };
+          const all = { ...data, readIds: readIds(), hiddenCompanies: hidden, syncing };
           if (keys == null) return all;
           const list = typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
           return Object.fromEntries(list.filter(k => k in all).map(k => [k, all[k]]));
@@ -72,9 +90,31 @@
     runtime: {
       async sendMessage(msg) {
         if (msg?.type === 'login') window.open(PORTAL, '_blank', 'noopener');
+        if (msg?.type === 'sync') return syncNow();
         return { ok: false, msg: 'Only available in the extension' };
       },
     },
+  };
+
+  // "Sync now": asks the server to sync with the portal and blog, then waits for it to finish (up to 5 min).
+  const syncNow = async () => {
+    if (syncing) return { ok: true };
+    syncing = true;
+    notify();
+    try {
+      const r = await fetch('api/sync', { method: 'POST' });
+      if (r.ok) {
+        for (let i = 0; i < 100; i++) {
+          await new Promise(res => setTimeout(res, 3000));
+          const s = await fetch('api/sync', { cache: 'no-store' }).then(x => x.json()).catch(() => ({ running: true }));
+          if (!s.running) break;
+        }
+      }
+    } catch { /* offline */ }
+    syncing = false;
+    await load();
+    notify();
+    return { ok: true };
   };
 
   // Pick up new syncs and posts read on your other devices.

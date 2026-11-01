@@ -2,25 +2,26 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)">
   <title>JAF Tracker</title>
   <link rel="icon" href="icons/icon48.png">
+  <link rel="apple-touch-icon" href="icons/icon128.png">
   <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <img src="icons/icon48.png" alt="">
+      <img src="icons/icon128.png" alt="JAF Tracker logo">
       <div>
-        <h1>JAF Tracker</h1>
-        <p id="who" class="muted"></p>
+        <h1 id="pageTitle">JAF Tracker</h1>
+        <p id="status" class="status"></p>
       </div>
-      <nav class="tabs"><a href="dashboard.html" class="on">My JAFs &amp; updates</a><a href="jafs.html">Open JAFs</a></nav>
+      <nav class="tabs"><a href="dashboard.html#jafs" data-view="jafs"><svg class="ticon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8.5 7V5.5a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2V7M3 13h18"/></svg><span>My JAFs</span></a><a href="dashboard.html#updates" data-view="updates"><svg class="ticon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 6.5 2.5 8 2.5 8h-17S6 15.5 6 9"/><path d="M10.2 20.5a2 2 0 0 0 3.6 0"/></svg><span>Updates</span><span id="tabUnread" class="tabcount" hidden></span></a><a href="dashboard.html#open" data-view="open"><svg class="ticon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg><span>Open JAFs</span></a></nav>
     </div>
     <div class="actions">
-      <span id="status" class="pill"></span>
-      <button id="sync">Sync now</button>
-      <button id="readall" class="ghost">Mark all read</button>
+      <button id="sync" class="syncbtn" title="Sync now" aria-label="Sync now"><span class="syncicon" aria-hidden="true">↻</span><span class="synctext">Sync now</span></button>
     </div>
   </header>
 
@@ -55,18 +56,30 @@
   <div class="toolbar">
     <input id="q" type="search" placeholder="Search companies or updates…" aria-label="Search">
     <div id="chips" class="chips"></div>
+    <div id="openBar" class="sortbar">
+      <div id="openViews" class="chips"></div>
+      <select id="openSort" aria-label="Sort">
+        <option value="closing">Closing soonest</option>
+        <option value="ctc">Highest CTC</option>
+        <option value="newest">Newest</option>
+      </select>
+    </div>
   </div>
 
   <main class="grid">
-    <section>
-      <h2>Updates <span id="feedCount" class="muted"></span></h2>
+    <section id="feedSection">
+      <div class="sechead">
+        <h2>Updates <span id="feedCount" class="muted"></span></h2>
+        <button id="unreadOnly" class="ghost small" aria-pressed="false">Show unread updates</button>
+      </div>
       <div id="feed" class="feed"></div>
     </section>
-    <section>
-      <h2>Your JAFs <button id="toggleHidden" class="linkbtn" hidden></button></h2>
+    <section id="jobsSection">
+      <h2>My signed JAFs <button id="toggleHidden" class="linkbtn" hidden></button></h2>
       <div id="jobs" class="jobs"></div>
     </section>
   </main>
+  <div id="openList" class="jaflist"></div>
 
   <footer class="muted">Read-only: this extension only reads the portal and the placement blog. It never signs, unsigns or changes anything.</footer>
   <script type="module" src="dashboard.js"></script>

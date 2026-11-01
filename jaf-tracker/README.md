@@ -5,11 +5,15 @@ The server does all the messaging (WhatsApp, Telegram, reminders); see the [main
 
 ## What it does
 
-- **My JAFs & updates** (click the extension icon): the JAFs you've signed, with CTC for your program,
-  location, CPI cutoff, deadlines and selection rounds with durations; every placement-blog post about
-  those companies; upcoming tests and PPTs. Hide companies you're done with.
-- **Open JAFs**: every JAF open right now, with the portal's own eligibility flags, bonus allowed or
-  not, CTC, countdown, requirements and job description, and a link to the portal's Jobs page.
+- One page (`dashboard.html`, click the extension icon) with three tabs:
+  - **My JAFs** (`#jafs`): the JAFs you've signed, with CTC for your program, location, CPI cutoff,
+    deadlines, selection rounds with durations and the next test/PPT. Hide companies you're done with.
+  - **Updates** (`#updates`, default): every placement-blog post about those companies, grouped by day
+    and labelled by type; upcoming tests and PPTs; a filter for unread posts.
+  - **Open JAFs** (`#open`): every JAF open right now, with the portal's own eligibility flags, bonus
+    allowed or not, CTC, countdown, requirements and job description, and a link to the portal's Jobs page.
+  `jafs.html` only redirects to `dashboard.html#open`; its code (`jafs.js`) is a module the dashboard imports.
+- The logo's source is `icons/logo.svg`; the PNGs are rendered from it.
 - **Send login to server**: whenever your login changes, sends your portal token and your cookies for
   `campus.placements.iitb.ac.in` and `sso.iitb.ac.in` (nothing else, never your password) to your
   server over Tailscale, protected by a secret key.

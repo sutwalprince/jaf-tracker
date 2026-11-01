@@ -161,6 +161,11 @@ server/deploy.sh
 
 It copies the code, restarts the website and WhatsApp service, and runs one sync.
 
+The website's **Sync now** button calls `POST /api/sync` on `web.py`, which starts `jaf-sync.service`
+(at most once a minute, and never while a sync is running); `GET /api/sync` says whether one is running.
+`web.py` gzips responses and answers unchanged files with `304`, and the site keeps the last data in the
+browser's `localStorage`, so it opens instantly over Tailscale's relays.
+
 ## Troubleshooting
 
 | Symptom | Fix |

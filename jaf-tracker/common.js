@@ -114,3 +114,36 @@ export function ago(iso) {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 }
+
+// What a blog post is about, from its title: [label, colour class].
+export function postKind(title) {
+  const t = String(title).toLowerCase();
+  if (/shortlist|result|selected|final list/.test(t)) return ['Shortlist', 'k-good'];
+  if (/deadline/.test(t)) return ['Deadline', 'k-red'];
+  if (/pre-placement talk|\bppt\b/.test(t)) return ['PPT', 'k-blue'];
+  if (/interview|group discussion|\bgd\b/.test(t)) return ['Interview', 'k-violet'];
+  if (/test|assessment|exam|registration/.test(t)) return ['Test', 'k-amber'];
+  if (/jafs? open/.test(t)) return ['JAF open', 'k-green'];
+  if (/jaf/.test(t)) return ['JAF update', 'k-gray'];
+  return ['Update', 'k-gray'];
+}
+
+// "Bajaj Auto Ltd. | Test Announcement" -> "Test Announcement" (the company is shown separately).
+export function cleanTitle(title, companies) {
+  const parts = String(title).split('|').map(x => x.trim()).filter(Boolean);
+  const reminder = parts.some(x => /^(urgent )?reminder$/i.test(x));
+  const keep = parts.filter(x => !/^(urgent )?reminder$/i.test(x) && !companies.some(c => companyPatterns(c).some(re => re.test(x))));
+  // If every part names the company (e.g. "Urgent Reminder | Texas Instruments Test Registration"), keep them.
+  const rest = keep.length ? keep : parts.filter(x => !/^(urgent )?reminder$/i.test(x));
+  if (!rest.length) return title;
+  return (reminder ? 'Reminder: ' : '') + rest.join(' · ');
+}
+
+const istDay = x => new Date(x).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+// "Today", "Yesterday", "Fri, 31 Oct": headings for the updates list.
+export function dayLabel(iso) {
+  if (istDay(iso) === istDay(Date.now())) return 'Today';
+  if (istDay(iso) === istDay(Date.now() - 86400000)) return 'Yesterday';
+  return new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short' });
+}
+export const timeOf = iso => new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' });

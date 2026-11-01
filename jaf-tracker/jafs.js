@@ -1,4 +1,4 @@
-import { ORIGIN, money, fmtDate, ago, until, esc, roundsHtml } from './common.js';
+import { ORIGIN, money, fmtDate, until, esc, roundsHtml } from './common.js';
 
 const $ = id => document.getElementById(id);
 const DAY = 86400000;
@@ -11,31 +11,13 @@ const VIEWS = {
   all: { label: 'All open', test: () => true },
 };
 
-let state = {};
 let view = 'can';
 const expanded = new Set();
 
-async function load() {
-  state = await chrome.storage.local.get(null);
-  render();
-}
-
-function render() {
+// Draws the Open JAFs view of dashboard.html: its stats, filter chips and JAF cards.
+export function renderOpen(state, q) {
   const open = state.openJobs || [];
   const prog = state.me?.programName || 'your program';
-  const q = $('q').value.trim().toLowerCase();
-
-  const me = state.me;
-  $('who').textContent = me ? [me.name, me.roll, me.programName].filter(Boolean).join(' · ') : 'Not synced yet';
-  const loggedOut = state.auth && !state.auth.ok;
-  $('status').textContent = state.syncing ? 'Syncing…' : loggedOut ? 'Logged out' : `Synced ${ago(state.lastSync)}`;
-  $('status').classList.toggle('bad', !!loggedOut);
-  $('sync').disabled = !!state.syncing;
-  $('login').hidden = !loggedOut;
-  $('loginMsg').textContent = state.auth?.msg || '';
-  $('error').hidden = !state.error;
-  $('error').textContent = state.error ? `Last sync failed: ${state.error}` : '';
-
   const can = open.filter(VIEWS.can.test);
   const bonus = open.filter(VIEWS.bonus.test);
   const soon = [...can, ...bonus].filter(j => new Date(j.closesAt) - Date.now() < DAY);
@@ -48,10 +30,10 @@ function render() {
     stat(`Top ${prog} CTC`, best ? money(best.ctc, best.currency) : '—', best ? best.company : 'among signable JAFs'),
   ].join('');
 
-  $('views').innerHTML = Object.entries(VIEWS).map(([k, v]) =>
-    `<button class="chip ${view === k ? 'on' : ''}" data-view="${k}">${esc(v.label)} (${open.filter(v.test).length})</button>`).join('');
+  $('openViews').innerHTML = Object.entries(VIEWS).map(([k, v]) =>
+    `<button class="chip ${view === k ? 'on' : ''}" data-openview="${k}">${esc(v.label)} (${open.filter(v.test).length})</button>`).join('');
 
-  const sort = $('sort').value;
+  const sort = $('openSort').value;
   const shown = open
     .filter(VIEWS[view].test)
     .filter(j => !q || `${j.company} ${j.title} ${j.locations.join(' ')} ${j.designation}`.toLowerCase().includes(q))
@@ -59,7 +41,7 @@ function render() {
       : sort === 'newest' ? (a, b) => new Date(b.opensAt) - new Date(a.opensAt)
       : (a, b) => new Date(a.closesAt) - new Date(b.closesAt));
 
-  $('list').innerHTML = shown.length ? shown.map(j => card(j, prog)).join('')
+  $('openList').innerHTML = shown.length ? shown.map(j => card(j, prog)).join('')
     : `<div class="empty">${state.lastSync ? 'No JAFs here right now.' : 'Waiting for the first sync…'}</div>`;
 }
 
@@ -105,22 +87,15 @@ function card(j, prog) {
   </article>`;
 }
 
-document.addEventListener('click', e => {
-  const v = e.target.closest('[data-view]');
-  if (v) { view = v.dataset.view; render(); return; }
+// Handles clicks inside the Open JAFs view; returns true if it used the click.
+export function onOpenClick(e) {
+  const v = e.target.closest('[data-openview]');
+  if (v) { view = v.dataset.openview; return true; }
   const m = e.target.closest('[data-more]');
   if (m) {
     const id = Number(m.dataset.more);
     if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-    render();
+    return true;
   }
-});
-
-$('q').addEventListener('input', render);
-$('sort').addEventListener('change', render);
-$('sync').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'sync' }));
-$('loginBtn').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'login' }));
-
-chrome.storage.onChanged.addListener(load);
-setInterval(render, 60_000); // keep countdowns fresh
-load();
+  return false;
+}

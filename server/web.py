@@ -5,11 +5,14 @@
 It serves the extension's own pages plus the data jaf_sync.py writes, keeps the shared read/hidden lists,
 and accepts your login from the laptop extension at POST /api/session (secret key required).
 """
+import gzip
+import hashlib
 import hmac
 import json
 import os
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,6 +36,15 @@ TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".js": "text/javascript; charset=utf-8", ".png": "image/png", ".json": "application/json"}
 
 
+SYNC_GAP = 60  # seconds between syncs started from the website, so the portal is never hammered
+last_sync_start = 0.0
+
+
+def sync_running():
+    r = subprocess.run(["systemctl", "--user", "is-active", "jaf-sync.service"], capture_output=True, text=True)
+    return r.stdout.strip() in ("active", "activating", "reloading")
+
+
 class Site(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0].lstrip("/") or "dashboard.html"
@@ -41,6 +53,9 @@ class Site(BaseHTTPRequestHandler):
             return
         if path == "api/hidden":
             self.send_json({"hidden": self.hidden()})
+            return
+        if path == "api/sync":
+            self.send_json({"running": sync_running()})
             return
         if path == "data.json":
             body = DATA.read_bytes() if DATA.exists() else b"{}"
@@ -53,11 +68,25 @@ class Site(BaseHTTPRequestHandler):
             return
         if path.endswith(".html"):
             # Load the shim (stands in for the chrome.* APIs) before the page's own module.
-            body = body.replace(b'<script type="module"', b'<script src="web-shim.js"></script>\n  <script type="module"', 1)
+            body = body.replace(b'<script type="module"', b'<link rel="modulepreload" href="common.js">\n  '
+                                b'<script src="web-shim.js"></script>\n  <script type="module"', 1)
+        # Browsers keep a copy and ask "changed?" each time; unchanged files come back as a tiny 304.
+        etag = '"%s"' % hashlib.sha1(body).hexdigest()[:20]
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", TYPES.get(Path(path).suffix, "application/octet-stream"))
+        if len(body) > 1024 and not path.endswith(".png") and "gzip" in self.headers.get("Accept-Encoding", ""):
+            body = gzip.compress(body, 6)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
@@ -96,6 +125,15 @@ class Site(BaseHTTPRequestHandler):
             return sorted(new)
 
     def do_POST(self):
+        if self.path == "/api/sync":
+            # "Sync now" on the website: the same read-only sync the timer runs. A no-op if one is running.
+            global last_sync_start
+            if not sync_running() and time.monotonic() - last_sync_start > SYNC_GAP:
+                last_sync_start = time.monotonic()
+                subprocess.Popen(["systemctl", "--user", "start", "--no-block", "jaf-sync.service"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.send_json({"running": True})
+            return
         if self.path == "/api/hidden":
             length = int(self.headers.get("Content-Length", 0))
             try:

@@ -11,6 +11,9 @@
   --danger: #c5221f;
   --danger-soft: #fdecea;
   --warn-soft: #fff6e0;
+  --amber: #a15c07; --amber-soft: #fff3db;
+  --blue: #1d5bd8; --blue-soft: #e5eeff;
+  --violet: #7c3aed; --violet-soft: #f1eaff;
   --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
   color-scheme: light;
 }
@@ -29,6 +32,9 @@
     --danger: #ff8a80;
     --danger-soft: #3a1c1c;
     --warn-soft: #33290f;
+    --amber: #fbbf24; --amber-soft: #33270c;
+    --blue: #93c5fd; --blue-soft: #16233a;
+    --violet: #c4b5fd; --violet-soft: #251c3d;
     --shadow: none;
     color-scheme: dark;
   }
@@ -36,8 +42,8 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-/* On the website (server/web-shim.js), syncing and phone-alert settings live in the extension only. */
-.web #wa, .web #srv, .web #sync { display: none !important; }
+/* On the website (server/web-shim.js), sending your login and phone-alert settings live in the extension only. */
+.web #wa, .web #srv { display: none !important; }
 
 body {
   margin: 0 auto;
@@ -64,7 +70,11 @@ button {
   cursor: pointer;
 }
 button.ghost { background: transparent; color: var(--accent); }
+button.ghost.on { background: var(--accent); color: #fff; }
 button:disabled { opacity: .6; cursor: default; }
+button.small { font-size: 12px; padding: 5px 10px; }
+.sechead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.sechead h2 { margin-bottom: 0; }
 
 .top { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
 .brand { display: flex; gap: 12px; align-items: center; }
@@ -80,6 +90,13 @@ button:disabled { opacity: .6; cursor: default; }
   color: var(--good);
 }
 .pill.bad { background: var(--danger-soft); color: var(--danger); }
+.brand p.status { margin-top: 2px; font-size: 12px; color: var(--good); display: flex; align-items: center; gap: 6px; }
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.status.bad { color: var(--danger); font-weight: 600; }
+.syncbtn { display: inline-flex; align-items: center; gap: 6px; }
+.syncicon { display: inline-block; font-size: 16px; line-height: 1; }
+.syncbtn:disabled .syncicon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .banner {
   margin-top: 16px;
@@ -134,6 +151,7 @@ button:disabled { opacity: .6; cursor: default; }
 .post.mention { border-color: var(--good); }
 .post .head {
   all: unset;
+  -webkit-tap-highlight-color: transparent;
   box-sizing: border-box;
   width: 100%;
   display: grid;
@@ -199,6 +217,17 @@ button:disabled { opacity: .6; cursor: default; }
 .tabs { display: flex; gap: 4px; margin-left: 16px; }
 .tabs a { padding: 6px 12px; border-radius: 8px; color: var(--muted); font-weight: 600; text-decoration: none; }
 .tabs a.on { background: var(--accent-soft); color: var(--accent); }
+.tabcount { margin-left: 6px; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #e5484d; color: #fff; vertical-align: 1px; }
+
+/* My JAFs / Updates views of dashboard.html */
+body[data-view] .grid { grid-template-columns: 1fr; }
+body[data-view="jafs"] #feedSection, body[data-view="jafs"] #upcoming, body[data-view="jafs"] #chips,
+body[data-view="jafs"] #unreadOnly, body[data-view="updates"] #jobsSection,
+body:not([data-view="open"]) #openBar, body:not([data-view="open"]) #openList,
+body[data-view="open"] .grid, body[data-view="open"] #upcoming, body[data-view="open"] #chips,
+body[data-view="open"] #unreadOnly { display: none !important; }
+body[data-view="jafs"] .jobs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 12px; }
+body[data-view="updates"] .feed, body[data-view="updates"] .sechead { max-width: 860px; }
 
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
@@ -208,11 +237,10 @@ button:disabled { opacity: .6; cursor: default; }
 .urgent { color: var(--danger); font-weight: 600; }
 .sortbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 .sortbar select { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
-.jaflist { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
-@media (max-width: 480px) { .jaflist { grid-template-columns: 1fr; } }
+.jaflist { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 12px; }
 .more { all: unset; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; margin-top: 10px; display: inline-block; }
 .upcoming { margin-bottom: 20px; }
-.uplist { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.uplist { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 10px; }
 .up {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -266,3 +294,93 @@ button:disabled { opacity: .6; cursor: default; }
 
 .empty { color: var(--muted); padding: 24px; text-align: center; background: var(--card); border: 1px dashed var(--line); border-radius: 12px; }
 footer { margin-top: 32px; font-size: 12px; text-align: center; }
+
+/* Phones */
+@media (max-width: 640px) {
+  body { padding: 12px 12px 28px; overflow-x: hidden; }
+  h1 { font-size: 19px; }
+  .top { gap: 10px; }
+  .brand { flex-wrap: wrap; gap: 10px; width: 100%; }
+  .brand img { width: 34px; height: 34px; }
+  .tabs { margin-left: 0; width: 100%; }
+  .tabs a { flex: 1; text-align: center; padding: 9px 4px; white-space: nowrap; }
+  /* Round sync button in the top-right corner, on the title's line; tabs get their own row */
+  .top { position: relative; }
+  .brand > div { padding-right: 52px; min-width: 0; }
+  .actions { position: absolute; top: 0; right: 0; }
+  .syncbtn { width: 42px; height: 42px; padding: 0; border-radius: 50%; justify-content: center; }
+  .syncbtn .syncicon { font-size: 20px; }
+  .synctext { display: none; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+  .stat { padding: 10px 12px; }
+  .stat .value { font-size: 20px; overflow-wrap: anywhere; }
+  .toolbar input { max-width: none; font-size: 16px; padding: 10px 12px; } /* 16px stops iOS zooming in */
+  .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; padding: 7px 12px; }
+  .sortbar select { font-size: 16px; }
+  .grid { gap: 20px; }
+  .post .head { padding: 12px; }
+  .body { padding: 0 12px 12px 12px; }
+  .body pre { max-height: 60vh; }
+  .job { padding: 12px; }
+  .job .row { flex-direction: column; gap: 4px; padding-right: 60px; }
+  .job .ctc { text-align: left; font-size: 16px; }
+  .hidebtn { padding: 6px 10px; font-size: 12px; }
+  .cardfoot { flex-wrap: wrap; }
+  .golink { padding: 9px 14px; }
+  .banner { padding: 12px; }
+  .banner button { width: 100%; }
+  .form input { font-size: 16px; }
+}
+
+/* Updates: day headings, post type labels */
+.dayhead { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 2px 0; }
+.dayhead:first-child { margin-top: 0; }
+.pmain { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.post .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.post .meta .time { margin-left: auto; white-space: nowrap; }
+.kind { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 5px; text-transform: uppercase; letter-spacing: .03em; }
+.k-good, .k-green { background: var(--good-soft); color: var(--good); }
+.k-red { background: var(--danger-soft); color: var(--danger); }
+.k-blue { background: var(--blue-soft); color: var(--blue); }
+.k-violet { background: var(--violet-soft); color: var(--violet); }
+.k-amber { background: var(--amber-soft); color: var(--amber); }
+.k-gray { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+.post .title { font-size: 14.5px; }
+.post.unread { border-left: 3px solid var(--accent); }
+
+/* My JAFs: the next test/PPT on the card */
+.nextup { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin-top: 10px; padding: 8px 10px;
+  border-radius: 10px; background: var(--amber-soft); color: var(--text); text-decoration: none; font-size: 13px; }
+.nextup .upleft { color: var(--amber); }
+
+/* Tab icons */
+.tabs a { display: inline-flex; align-items: center; gap: 6px; position: relative; }
+.ticon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+@media (max-width: 640px) {
+  /* App-style bottom tab bar, in thumb reach */
+  body { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .tabs { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; margin: 0; gap: 0;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--card) 88%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line); }
+  .tabs a { flex: 1; flex-direction: column; gap: 3px; padding: 6px 4px; font-size: 11.5px; border-radius: 12px; -webkit-tap-highlight-color: transparent; }
+  .tabs a.on { background: transparent; }
+  .ticon { width: 22px; height: 22px; padding: 3px 14px; border-radius: 999px; box-sizing: content-box; }
+  .tabs a.on .ticon { background: var(--accent-soft); }
+  .tabs .tabcount { position: absolute; top: 2px; left: calc(50% + 8px); margin: 0; font-size: 10px; padding: 0 6px; line-height: 16px; }
+  .brand > div { padding-right: 52px; }
+
+  /* Compact stats */
+  .stats { gap: 8px; }
+  .stat { padding: 9px 11px; border-radius: 10px; }
+  .stat .label { font-size: 10.5px; }
+  .stat .value { font-size: 18px; }
+  .stat .sub { font-size: 11px; line-height: 1.35; }
+
+  .post .head { grid-template-columns: 1fr auto; gap: 8px; }
+  .post .dot { display: none; }
+  .body { padding: 0 12px 12px; }
+}

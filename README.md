@@ -59,10 +59,18 @@ open?", "which JAFs close today?", "what does Juspay's JD ask for?". Voice notes
 server itself. When the month's budget is used up, summaries fall back to the plain format and questions get
 "budget used up" until the 1st.
 
-**Website** (private: opens only on your own Tailscale devices): *My JAFs & updates* (your signed
-JAFs with CTC, rounds and durations, blog updates, upcoming events, Hide/Unhide) and *Open JAFs*
-(eligibility, bonus, CTC for your program, countdowns, link to sign on the portal). Read/unread and
-hidden companies are shared across all your devices.
+**Website** (private: opens only on your own Tailscale devices; works well on a phone, with a bottom
+tab bar). Three tabs that switch instantly:
+- *My JAFs* (`…/#jafs`): your signed JAFs with CTC, rounds and durations, and the next test or PPT on
+  each card. Companies with something coming up are listed first. Hide/Unhide companies you're done with.
+- *Updates* (`…/#updates`, the default): blog posts about your companies, grouped by day and labelled
+  (Test, PPT, Interview, Deadline, JAF open, Shortlist), upcoming events, and **Show unread updates (N)**.
+  The tab shows a red count of unread posts.
+- *Open JAFs* (`…/#open`): eligibility, bonus, CTC for your program, countdowns, link to sign on the portal.
+
+**Sync now** (top right) asks the server to sync with the portal and blog straight away (read-only, at
+most once a minute). Read/unread and hidden companies are shared across all your devices; each device
+keeps a copy of the last data so pages open instantly.
 
 ## Day to day
 

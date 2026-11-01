@@ -87,6 +87,10 @@ question by text and by voice note.
 - **Gemini models change and get busy.** If a model times out or returns 404/503, try another free-tier
   model and set `config.json → gemini.model` / `fallbackModel`. Check the current list on
   ai.google.dev/gemini-api/docs/pricing.
+- **The website is the extension's own pages** (`dashboard.html` with `#jafs` / `#updates` / `#open`
+  views), served by `web.py` with `web-shim.js` standing in for `chrome.*`. Change the pages once, test
+  both in the extension and on the site, then `server/deploy.sh`. Keep it one page: separate pages cost a
+  full reload per tab through Tailscale's relay. New files must be added to `FILES` in `web.py`.
 - **Chrome caches extension background code by version**: bump `version` in `manifest.json` whenever you
   change the extension, then reload it in `chrome://extensions`.
 - **Reminders**: they're keyed by blog post (a company's repeat post restarts them, by design) and are not
