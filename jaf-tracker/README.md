@@ -13,7 +13,11 @@ The server does all the messaging (WhatsApp, Telegram, reminders); see the [main
   - **Open JAFs** (`#open`): every JAF open right now, with the portal's own eligibility flags, bonus
     allowed or not, CTC, countdown, requirements and job description, and a link to the portal's Jobs page.
   `jafs.html` only redirects to `dashboard.html#open`; its code (`jafs.js`) is a module the dashboard imports.
-- The logo's source is `icons/logo.svg`; the PNGs are rendered from it.
+- The logo's source is `icons/logo.svg`; the PNGs (16–512 px) are rendered from it. `site.webmanifest`
+  makes the website installable as an app.
+- Post text keeps where links point, so links in blog posts open from the dashboard.
+- Your room from seating sheets, **✓ Done** on finished tests and live push come from the server, so they
+  show on the website; the extension's own dashboard reads the blog itself and doesn't have them.
 - **Send login to server**: whenever your login changes, sends your portal token and your cookies for
   `campus.placements.iitb.ac.in` and `sso.iitb.ac.in` (nothing else, never your password) to your
   server over Tailscale, protected by a secret key.

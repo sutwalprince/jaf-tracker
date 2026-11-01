@@ -1,4 +1,7 @@
-import { ORIGIN, BLOG_URL, relevantPosts, shortName, formatDuration } from './common.js';
+import { ORIGIN, BLOG_URL, relevantPosts, shortName, formatDuration, withoutLinks } from './common.js';
+
+// 2: post text keeps links as "label (url)"; a change re-reads the whole blog once.
+const POST_FORMAT = 2;
 
 // A JAF's selection rounds in order, with readable durations.
 const roundsFrom = list => [...(list || [])].sort((x, y) => x.order - y.order)
@@ -45,7 +48,19 @@ function decode(s) {
   });
 }
 
-function htmlToText(html) {
+// <a href="https://x">Click Here</a> -> "Click Here (https://x)", so the text keeps where links point.
+function keepLink(m, q, href, inner) {
+  const label = decode(inner.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+  href = decode(href).trim();
+  let url;
+  try { url = new URL(href, BLOG_URL).href; } catch { return inner; }
+  if (href.startsWith('#') || !/^https?:/.test(url)) return inner;
+  url = url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+  return !label || label === href || label === url ? url : `${label} (${url})`;
+}
+
+function htmlToText(html, links = false) {
+  if (links) html = html.replace(/<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, keepLink);
   return decode(html
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, '')
     .replace(/<br\s*\/?>|<\/(p|li|tr|h\d|div|ol|ul|table)>/gi, '\n')
@@ -64,7 +79,7 @@ function parseBlog(html, me) {
     const date = (chunk.match(/<time[^>]*datetime="([^"]+)"/) || [])[1] || null;
     const t = chunk.match(/class="[^"]*entry-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
     const body = (chunk.match(/class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*)$/) || [])[1] || '';
-    const text = htmlToText(body);
+    const text = htmlToText(body, true);
     return {
       id,
       date,
@@ -157,7 +172,7 @@ async function doSync() {
 
   // Blog. A blog hiccup is not a logout: keep the old posts, retry next sync, warn only after an hour.
   const firstRun = !st.lastSync;
-  const result = await readBlog(st, me, firstRun);
+  const result = await readBlog(st, me, firstRun || st.postFormat !== POST_FORMAT); // re-read all pages when the format changed
   const blog = result.known ? result : null;
   const known = blog ? blog.known : new Map((st.posts || []).map(p => [p.id, p]));
   const fresh = blog ? blog.fresh : [];
@@ -181,6 +196,7 @@ async function doSync() {
   const events = extractEvents(relevantPosts(allPosts, Object.values(jobs)), jobs);
   await chrome.storage.local.set({
     me, jobs, posts: allPosts, events, openJobs, jobDetails, lastSync: new Date().toISOString(), auth: { ok: true },
+    ...(blog ? { postFormat: POST_FORMAT } : {}),
     blogFailingSince, blogWarned: blogWarn, blogError: blog ? null : result.error, ssoAlerted: !!result.ssoLoggedOut,
     error: blogWarn ? "Couldn't read the placement blog for over an hour (still retrying). JAFs and reminders are up to date." : null,
     seenOpenIds: [...new Set([...(st.seenOpenIds || []), ...openJobs.map(j => j.id)])],
@@ -223,10 +239,11 @@ function findTime(s) {
 function extractEvent(post, company) {
   const kind = KINDS.find(([re]) => re.test(post.title));
   if (!kind) return null;
-  const seg = label => (post.text.match(new RegExp(`\\b${label}\\s*[:\\-–]\\s*([^\\n]{0,90})`, 'i')) || [])[1] || null;
+  const text = withoutLinks(post.text);
+  const seg = label => (text.match(new RegExp(`\\b${label}\\s*[:\\-–]\\s*([^\\n]{0,90})`, 'i')) || [])[1] || null;
   const year = new Date(post.date || Date.now()).getFullYear();
-  const date = findDate(seg('date') || seg('deadline') || '', year) || findDate(post.text, year);
-  const time = findTime(seg('updated time') || seg('time') || seg('deadline') || '') || findTime(post.text);
+  const date = findDate(seg('date') || seg('deadline') || '', year) || findDate(text, year);
+  const time = findTime(seg('updated time') || seg('time') || seg('deadline') || '') || findTime(text);
   if (!date || !time || date.mo < 0) return null;
   const at = new Date(Date.UTC(date.y, date.mo, date.d, time.h, time.mi) - 330 * 60000).toISOString();
   const venue = (seg('venue') || '').replace(/\s+/g, ' ').trim().slice(0, 60);

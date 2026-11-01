@@ -1,4 +1,4 @@
-import { ORIGIN, money, fmtDate, until, esc, roundsHtml } from './common.js';
+import { ORIGIN, money, fmtDate, until, esc, roundsHtml, stat } from './common.js';
 
 const $ = id => document.getElementById(id);
 const DAY = 86400000;
@@ -20,14 +20,17 @@ export function renderOpen(state, q) {
   const prog = state.me?.programName || 'your program';
   const can = open.filter(VIEWS.can.test);
   const bonus = open.filter(VIEWS.bonus.test);
-  const soon = [...can, ...bonus].filter(j => new Date(j.closesAt) - Date.now() < DAY);
+  // Signable JAFs closing before midnight tonight (IST).
+  const istDay = x => new Date(x).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const soon = [...can, ...bonus].filter(j => new Date(j.closesAt) > Date.now() && istDay(j.closesAt) === istDay(Date.now()));
   const best = [...can, ...bonus].filter(j => j.currency === 'INR' && j.ctc).sort((a, b) => b.ctc - a.ctc)[0];
   $('stats').innerHTML = [
-    stat('Open now', open.length, `${new Set(open.map(j => j.company)).size} companies`),
-    stat('You can sign', can.length, 'eligible, not signed yet', can.length > 0),
-    stat('Bonus allowed', bonus.length, 'ineligible, but bonus JAF allowed'),
-    stat('Closing in 24 h', soon.length, 'that you can still sign', false, soon.length > 0),
-    stat(`Top ${prog} CTC`, best ? money(best.ctc, best.currency) : '—', best ? best.company : 'among signable JAFs'),
+    stat(['Open now', 'Open'], open.length, `${new Set(open.map(j => j.company)).size} companies`),
+    // Eligible + bonus-allowed in one tile (same count as the green badge on the tab); "5+2" on phones when there are bonus ones.
+    stat(['You can sign', 'Can sign'], [String(can.length + bonus.length), bonus.length ? `${can.length}+${bonus.length}` : String(can.length)],
+      `${can.length} eligible · ${bonus.length} with bonus`, can.length + bonus.length > 0),
+    stat(['Closing today', 'Ends today'], soon.length, 'that you can still sign', false, soon.length > 0),
+    stat([`Top ${prog} CTC`, 'Top CTC'], best ? [money(best.ctc, best.currency), best.currency === 'INR' && best.ctc >= 1e5 ? `₹${Math.round(best.ctc / 1e5)} L` : money(best.ctc, best.currency)] : '—', best ? best.company : 'among signable JAFs'),
   ].join('');
 
   $('openViews').innerHTML = Object.entries(VIEWS).map(([k, v]) =>
@@ -45,9 +48,6 @@ export function renderOpen(state, q) {
     : `<div class="empty">${state.lastSync ? 'No JAFs here right now.' : 'Waiting for the first sync…'}</div>`;
 }
 
-function stat(label, value, sub, good = false, urgent = false) {
-  return `<div class="stat ${good ? 'hot' : ''}"><div class="label">${esc(label)}</div><div class="value ${urgent ? 'urgent' : ''}">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
-}
 
 function card(j, prog) {
   const left = new Date(j.closesAt) - Date.now();

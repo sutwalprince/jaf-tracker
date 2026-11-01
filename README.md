@@ -33,7 +33,8 @@ applies, uploads or changes anything.
 
 | When | What |
 |---|---|
-| As it happens | New blog posts about your companies, posts naming your roll number (shortlists), new JAFs you're eligible for |
+| As it happens | New blog posts about your companies (links in them included and tappable), posts naming your roll number (shortlists), new JAFs you're eligible for |
+| Seating sheet posted | 💺 Your room for the test, read from the seating sheet (bighome PDF or Google Sheet) by your roll number; again if it changes. Reminders and the 8 am / 8 pm messages include it |
 | 24 h, 12 h, 4 h before | Tests, PPTs, registration deadlines, JAFs you can sign but haven't, your portal login expiring (a company's new post about a test starts its reminders again) |
 | 8 am | Today's plan: tests/PPTs with times and venues, JAFs closing today |
 | 8 pm | Today's remaining deadlines, plus anything due early tomorrow |
@@ -59,18 +60,24 @@ open?", "which JAFs close today?", "what does Juspay's JD ask for?". Voice notes
 server itself. When the month's budget is used up, summaries fall back to the plain format and questions get
 "budget used up" until the 1st.
 
-**Website** (private: opens only on your own Tailscale devices; works well on a phone, with a bottom
-tab bar). Three tabs that switch instantly:
-- *My JAFs* (`…/#jafs`): your signed JAFs with CTC, rounds and durations, and the next test or PPT on
-  each card. Companies with something coming up are listed first. Hide/Unhide companies you're done with.
+**Website** (private: opens only on your own Tailscale devices). Built for phones: bottom tab bar,
+search and filters pinned while you scroll, one compact row of stats, and it can be **installed as an
+app** (Chrome **⋮ → Add to Home screen**: full screen, no browser bar). Three tabs that switch instantly:
+- *My JAFs* (`…/#jafs`): your signed JAFs with CTC, rounds and durations, and the next test or PPT (with
+  your room, when known) on each card. Companies with something coming up are listed first.
+  Hide/Unhide companies you're done with.
 - *Updates* (`…/#updates`, the default): blog posts about your companies, grouped by day and labelled
-  (Test, PPT, Interview, Deadline, JAF open, Shortlist), upcoming events, and **Show unread updates (N)**.
-  The tab shows a red count of unread posts.
+  (Test, PPT, Interview, Deadline, JAF open, Shortlist); tests and PPTs that are over show **✓ Done**;
+  links in posts open; seating posts show your room (💺 LH 101). Upcoming events, and **Show unread
+  updates (N)**. The tab shows a red count of unread posts.
 - *Open JAFs* (`…/#open`): eligibility, bonus, CTC for your program, countdowns, link to sign on the portal.
+  The tab shows a green count of JAFs you can still sign (eligible or bonus); the stats show how many
+  end today.
 
-**Sync now** (top right) asks the server to sync with the portal and blog straight away (read-only, at
-most once a minute). Read/unread and hidden companies are shared across all your devices; each device
-keeps a copy of the last data so pages open instantly.
+**Live:** an open page updates by itself within about 2 seconds of the server getting new data (no
+refresh), and opening the site starts a sync if the last one is over 5 minutes old. **Sync now** (top
+right) syncs straight away (read-only, at most once a minute). Read/unread and hidden companies are
+shared across all your devices, live as well.
 
 ## Day to day
 

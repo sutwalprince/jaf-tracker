@@ -1,4 +1,4 @@
-import { relevantPosts, money, fmtDate, ago, esc, shortName, when, until, roundsHtml, postKind, cleanTitle, dayLabel, timeOf } from './common.js';
+import { relevantPosts, money, fmtDate, ago, esc, shortName, when, until, roundsHtml, postKind, cleanTitle, dayLabel, timeOf, linkify, stat } from './common.js';
 import { renderOpen, onOpenClick } from './jafs.js';
 
 const $ = id => document.getElementById(id);
@@ -91,12 +91,10 @@ function render() {
   const now = Date.now();
   const unread = posts.filter(p => !read.has(p.id)).length;
   const mentions = posts.filter(p => p.mentionsMe).length;
-  const nextClose = jobs.filter(j => new Date(j.closesAt) > now).sort((a, b) => new Date(a.closesAt) - new Date(b.closesAt))[0];
   $('stats').innerHTML = [
-    stat('JAFs signed', all.length, `${new Set(all.map(j => j.company)).size} companies${hidden.size ? `, ${hidden.size} hidden` : ''}`),
-    stat('Unread updates', unread, `${posts.length} total`),
-    stat('Mentions you', mentions, 'shortlists & lists with your roll/name', mentions > 0),
-    stat('Next JAF deadline', nextClose ? fmtDate(nextClose.closesAt) : '—', nextClose ? nextClose.company : 'none open'),
+    stat(['JAFs signed', 'Signed'], all.length, `${new Set(all.map(j => j.company)).size} companies${hidden.size ? `, ${hidden.size} hidden` : ''}`),
+    stat(['Unread updates', 'Unread'], unread, `${posts.length} total`),
+    stat(['Mentions you', 'Mentions'], mentions, 'shortlists & lists with your roll/name', mentions > 0),
   ].join('');
 
   // Upcoming tests / PPTs / interviews (read from blog posts)
@@ -106,7 +104,7 @@ function render() {
   $('upcoming').innerHTML = `<h2>Upcoming</h2><div class="uplist">${ups.map(e => `
     <a class="up" href="${esc(e.link)}" target="_blank" rel="noopener">
       <span class="upicon">${e.icon}</span>
-      <span><b>${esc(e.company)}</b> · ${esc(e.kind)}<br><span class="muted">${esc(when(e.at))}${e.venue ? ` · ${esc(e.venue)}` : ''}</span></span>
+      <span><b>${esc(e.company)}</b> · ${esc(e.kind)}<br><span class="muted">${esc(when(e.at))}${placeHtml(e)}</span></span>
       <span class="upleft">${new Date(e.at) > now ? esc(until(e.at)) : 'now'}</span>
     </a>`).join('')}</div>`;
 
@@ -138,6 +136,11 @@ function render() {
   $('unreadOnly').textContent = unreadOnly ? 'Show all updates' : `Show unread updates (${unread})`;
   $('tabUnread').hidden = !unread;
   $('tabUnread').textContent = unread;
+  // Open JAFs you can still sign (eligible or bonus allowed), shown on the Open JAFs tab.
+  const signable = (state.openJobs || []).filter(j => !j.signed && (j.eligible || j.bonus) && new Date(j.closesAt) > now).length;
+  $('tabOpen').hidden = !signable;
+  $('tabOpen').textContent = signable;
+  $('tabOpen').title = `${signable} open JAF${signable === 1 ? '' : 's'} you can sign`;
   $('unreadOnly').setAttribute('aria-pressed', String(unreadOnly));
   $('unreadOnly').classList.toggle('on', unreadOnly);
 
@@ -158,26 +161,33 @@ function render() {
   if (view === 'open') renderOpen(state, q); // its own stats and cards
 }
 
-function stat(label, value, sub, hot = false) {
-  return `<div class="stat ${hot ? 'hot' : ''}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
+// " · LH 301 · 💺 Your room: LH 101" for a test (your room comes from the seating sheet, on the website).
+function placeHtml(e) {
+  const tba = /announc|tba|tbd/i.test(e.venue || '');
+  return (e.venue && !(e.seat && tba) ? ` · ${esc(e.venue)}` : '') + (e.seat ? ` · 💺 Your room: <b>${esc(e.seat)}</b>` : '');
 }
+
 
 
 function postHtml(p, byId, read) {
   const cos = [...new Set(p.jobIds.map(id => shortName(byId[id]?.company || '')))].filter(Boolean);
   const open = expanded.has(p.id);
   const [kind, kcls] = postKind(p.title);
+  // Tests, PPTs and interviews that are over (3 h after they start) are greyed out.
+  const at = (state.postEvents || {})[p.id];
+  const done = ['Test', 'PPT', 'Interview'].includes(kind) && at && Date.now() > new Date(at).getTime() + 3 * 3600000;
+  const seat = (state.postSeats || {})[p.id];
   const fullNames = [...new Set(p.jobIds.map(id => byId[id]?.company).filter(Boolean))];
-  return `<article class="post ${read.has(p.id) ? '' : 'unread'} ${p.mentionsMe ? 'mention' : ''}">
+  return `<article class="post ${read.has(p.id) ? '' : 'unread'} ${p.mentionsMe ? 'mention' : ''} ${done ? 'done' : ''}">
     <button class="head" data-post="${esc(p.id)}" aria-expanded="${open}">
       <span class="dot"></span>
       <span class="pmain">
-        <span class="meta"><span class="kind ${kcls}">${esc(kind)}</span>${cos.length ? `<span class="co">${esc(cos.join(', '))}</span>` : ''}<span class="time">${esc(timeOf(p.date))}</span></span>
+        <span class="meta"><span class="kind ${done ? 'k-done' : kcls}">${esc(kind)}${done ? ' · ✓ Done' : ''}</span>${seat ? `<span class="seat">💺 ${esc(seat)}</span>` : ''}${cos.length ? `<span class="co">${esc(cos.join(', '))}</span>` : ''}<span class="time">${esc(timeOf(p.date))}</span></span>
         <span class="title">${esc(cleanTitle(p.title, fullNames))}</span>
       </span>
       ${p.mentionsMe ? '<span class="badge">Mentions you</span>' : ''}
     </button>
-    ${open ? `<div class="body"><pre>${esc(p.text)}</pre><a href="${esc(p.link)}" target="_blank" rel="noopener">Open on blog ↗</a></div>` : ''}
+    ${open ? `<div class="body"><pre>${linkify(p.text)}</pre><a href="${esc(p.link)}" target="_blank" rel="noopener">Open on blog ↗</a></div>` : ''}
   </article>`;
 }
 
@@ -191,7 +201,7 @@ function jobHtml(j, ups, selected, isHidden, next) {
       <div><div class="company">${esc(shortName(j.company))}</div><div class="role">${esc(j.title)} · Job code ${esc(j.code)}</div></div>
       <div class="ctc">${esc(money(j.ctc, j.currency))}<small>CTC${j.gross != null && j.gross !== j.ctc ? ` · ${esc(money(j.gross, j.currency))} gross` : ''}</small></div>
     </div>
-    ${next ? `<a class="nextup" href="${esc(next.link)}" target="_blank" rel="noopener"><span>${next.icon}</span><span><b>${esc(next.kind)}</b> ${esc(when(next.at))}</span><span class="upleft">${new Date(next.at) > Date.now() ? esc(until(next.at)) : 'now'}</span></a>` : ''}
+    ${next ? `<a class="nextup" href="${esc(next.link)}" target="_blank" rel="noopener"><span>${next.icon}</span><span><b>${esc(next.kind)}</b> ${esc(when(next.at))}${next.seat ? ` · 💺 <b>${esc(next.seat)}</b>` : ''}</span><span class="upleft">${new Date(next.at) > Date.now() ? esc(until(next.at)) : 'now'}</span></a>` : ''}
     <dl>
       <div><dt>Location</dt><dd>${esc(j.locations.join(', ') || '—')}</dd></div>
       <div><dt>CPI cutoff</dt><dd>${j.cpiCutoff ? esc(j.cpiCutoff) : 'None'}</dd></div>
@@ -220,6 +230,8 @@ async function toggleHidden(company) {
 }
 
 document.addEventListener('click', e => {
+  const tab = e.target.closest('.tabs [data-view]');
+  if (tab && tab.dataset.view === view) { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   if (view === 'open' && onOpenClick(e)) { render(); return; }
   const hide = e.target.closest('[data-hide]');
   if (hide) {

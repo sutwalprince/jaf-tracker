@@ -9,6 +9,7 @@
   let read = [];
   let hidden = [];
   let syncing = false;
+  let dataTag = ''; // the server's fingerprint (ETag) of the data last loaded
 
   const readIds = () => read;
   // Hidden companies, shared by all your devices.
@@ -38,7 +39,10 @@
     const getData = (async () => {
       try {
         const r = await fetch('data.json', { cache: 'no-cache' });
-        if (r.ok) data = await r.json();
+        if (r.ok) {
+          data = await r.json();
+          dataTag = r.headers.get('ETag') || String(data.lastSync);
+        }
       } catch { /* keep the last data we had */ }
     })();
     await Promise.all([getData, syncRead(), syncHidden()]);
@@ -97,12 +101,18 @@
   };
 
   // "Sync now": asks the server to sync with the portal and blog, then waits for it to finish (up to 5 min).
-  const syncNow = async () => {
+  // onlyIfStale: when the site is opened, sync only if the last sync is over 5 minutes old.
+  const syncNow = async (onlyIfStale = false) => {
     if (syncing) return { ok: true };
+    if (onlyIfStale) {
+      const r = await fetch('api/sync?stale=1', { method: 'POST' }).catch(() => null);
+      const s = r?.ok ? await r.json() : null;
+      if (!s?.started) return { ok: true };
+    }
     syncing = true;
     notify();
     try {
-      const r = await fetch('api/sync', { method: 'POST' });
+      const r = onlyIfStale ? { ok: true } : await fetch('api/sync', { method: 'POST' });
       if (r.ok) {
         for (let i = 0; i < 100; i++) {
           await new Promise(res => setTimeout(res, 3000));
@@ -118,11 +128,28 @@
   };
 
   // Pick up new syncs and posts read on your other devices.
+  const stamp = () => `${dataTag}|${data.lastSync}|${read.join()}|${hidden.join()}`;
   const refresh = async () => {
-    const before = `${data.lastSync}|${read.length}|${hidden.join()}`;
+    const before = stamp();
     await load();
-    if (`${data.lastSync}|${read.length}|${hidden.join()}` !== before) notify();
+    if (stamp() !== before) notify();
   };
-  setInterval(refresh, 60000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+
+  // Push: the server says "update" the moment new data lands; the page reloads its data and redraws.
+  // The browser reconnects by itself; phones drop the stream in the background, so it's reopened on return.
+  let events = null;
+  const listen = () => {
+    if (events && events.readyState !== EventSource.CLOSED) return;
+    events = new EventSource('api/events');
+    events.onmessage = () => { if (!syncing) refresh(); };
+  };
+  listen();
+  syncNow(true); // opening the site: sync if the last sync is over 5 minutes old
+  setInterval(refresh, 120000); // fallback, in case the push stream is down
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    listen();
+    refresh();
+    syncNow(true);
+  });
 })();

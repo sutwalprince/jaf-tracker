@@ -31,13 +31,37 @@ HIDDEN_LOCK = threading.Lock()
 
 # Only these files are served; nothing else from the home folder is reachable.
 FILES = {"dashboard.html", "jafs.html", "dashboard.css", "dashboard.js", "jafs.js", "common.js",
-         "icons/icon16.png", "icons/icon48.png", "icons/icon128.png"}
+         "icons/icon16.png", "icons/icon48.png", "icons/icon128.png",
+         "icons/icon192.png", "icons/icon512.png", "site.webmanifest"}
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
-         ".js": "text/javascript; charset=utf-8", ".png": "image/png", ".json": "application/json"}
+         ".js": "text/javascript; charset=utf-8", ".png": "image/png", ".json": "application/json",
+         ".webmanifest": "application/manifest+json"}
 
 
 SYNC_GAP = 60  # seconds between syncs started from the website, so the portal is never hammered
 last_sync_start = 0.0
+
+
+STALE_AFTER = 5 * 60     # opening the site starts a sync if the last one is older than this
+PUSH_POLL = 2            # seconds between checks for changed data, per open page
+PUSH_PING = 25           # keep-alive comment, so proxies don't drop an idle stream
+PUSH_MAX_AGE = 30 * 60   # end a stream after 30 min; the browser reconnects by itself
+MAX_STREAMS = 20
+streams = threading.BoundedSemaphore(MAX_STREAMS)
+
+
+def data_stamp():
+    """Changes whenever the website's data, the shared read list or the hidden list changes."""
+    return tuple(f.stat().st_mtime_ns if f.exists() else 0 for f in (DATA, READ_FILE, HIDDEN_FILE))
+
+
+def last_sync_age():
+    try:
+        last = json.loads(DATA.read_text()).get("lastSync")
+        from datetime import datetime, timezone
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(last.replace("Z", "+00:00"))).total_seconds()
+    except Exception:  # noqa: BLE001 - no data yet, or unreadable: treat as stale
+        return float("inf")
 
 
 def sync_running():
@@ -56,6 +80,9 @@ class Site(BaseHTTPRequestHandler):
             return
         if path == "api/sync":
             self.send_json({"running": sync_running()})
+            return
+        if path == "api/events":
+            self.push_stream()
             return
         if path == "data.json":
             body = DATA.read_bytes() if DATA.exists() else b"{}"
@@ -124,15 +151,48 @@ class Site(BaseHTTPRequestHandler):
                 os.replace(tmp, HIDDEN_FILE)
             return sorted(new)
 
+    def push_stream(self):
+        """Server-Sent Events: tells an open page "update" the moment new data lands (a sync finished, or a post
+        was read / a company hidden on another device). Nothing but that one word is sent."""
+        if not streams.acquire(blocking=False):
+            self.send_error(503)
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b"retry: 5000\n\n")
+            stamp, started, pinged = data_stamp(), time.monotonic(), time.monotonic()
+            while time.monotonic() - started < PUSH_MAX_AGE:
+                time.sleep(PUSH_POLL)
+                now_stamp = data_stamp()
+                if now_stamp != stamp:
+                    stamp = now_stamp
+                    self.wfile.write(b"data: update\n\n")
+                    pinged = time.monotonic()
+                elif time.monotonic() - pinged > PUSH_PING:
+                    self.wfile.write(b": ping\n\n")
+                    pinged = time.monotonic()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # the page was closed
+        finally:
+            streams.release()
+
     def do_POST(self):
-        if self.path == "/api/sync":
-            # "Sync now" on the website: the same read-only sync the timer runs. A no-op if one is running.
+        if self.path.split("?", 1)[0] == "/api/sync":
+            # "Sync now" on the website, or ?stale=1 when the site is opened: the same read-only sync the timer runs.
+            # With ?stale=1 it only starts if the last sync is over 5 min old. Never while one runs, at most once a minute.
             global last_sync_start
-            if not sync_running() and time.monotonic() - last_sync_start > SYNC_GAP:
+            wanted = "stale=1" not in self.path or last_sync_age() > STALE_AFTER
+            started = False
+            if wanted and not sync_running() and time.monotonic() - last_sync_start > SYNC_GAP:
                 last_sync_start = time.monotonic()
                 subprocess.Popen(["systemctl", "--user", "start", "--no-block", "jaf-sync.service"],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.send_json({"running": True})
+                started = True
+            self.send_json({"running": started or sync_running(), "started": started})
             return
         if self.path == "/api/hidden":
             length = int(self.headers.get("Content-Length", 0))

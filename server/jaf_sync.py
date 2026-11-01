@@ -27,11 +27,15 @@ import http.cookiejar
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+from xml.etree import ElementTree
 from base64 import urlsafe_b64decode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +60,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 MAX_PAGES = 40
 TEXT_LIMIT = 8000
+POST_FORMAT = 2  # 2: post text keeps links as "label (url)"; a change re-reads the whole blog once
 DETAIL_TTL = 3600            # seconds before re-reading a JAF's details
 BLOG_WARN = 3600             # seconds the blog must keep failing before telling you
 REMIND_HOURS = (4, 12, 24)
@@ -202,7 +207,7 @@ def company_patterns(name):
 
 
 def match_jobs(post, jobs):
-    head = f"{post['title']} {post['text'][:300]}"
+    head = f"{post['title']} {without_links(post['text'])[:300]}"
     return [j["id"] for j in jobs if any(p.search(head) for p in company_patterns(j["company"]))]
 
 
@@ -237,8 +242,28 @@ def company_of(post, jobs):
 
 # ---------- blog parsing ----------
 
-def html_to_text(s):
+LINK_IN_TEXT = re.compile(r" ?\((https?://[^\s()]+)\)")
+
+
+def without_links(text):
+    """Post text minus the "(https://…)" parts html_to_text(links=True) adds."""
+    return LINK_IN_TEXT.sub("", text)
+
+
+def _link(m):
+    href = html.unescape(m.group(2)).strip()
+    label = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", m.group(3)))).strip()
+    url = urllib.parse.urljoin(BLOG_URL, href)
+    if not url.startswith(("http://", "https://")) or href.startswith("#"):
+        return m.group(3)
+    url = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+    return url if not label or label == href or label == url else f"{label} ({url})"
+
+
+def html_to_text(s, links=False):
     s = re.sub(r"<(script|style)[\s\S]*?</\1>", "", s, flags=re.I)
+    if links:  # keep where links point: <a href="https://x">Click Here</a> -> "Click Here (https://x)"
+        s = re.sub(r"<a\b[^>]*?\bhref\s*=\s*([\"'])(.*?)\1[^>]*>([\s\S]*?)</a>", _link, s, flags=re.I)
     s = re.sub(r"<br\s*/?>|</(p|li|tr|h\d|div|ol|ul|table)>", "\n", s, flags=re.I)
     s = re.sub(r"</t[dh]>", "\t", s, flags=re.I)
     s = html.unescape(re.sub(r"<[^>]+>", "", s))
@@ -267,7 +292,7 @@ def parse_blog(page, me):
         date = re.search(r'<time[^>]*datetime="([^"]+)"', chunk)
         title = re.search(r'class="[^"]*entry-title[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', chunk)
         body = re.search(r'class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*)$', chunk)
-        text = html_to_text(body.group(1) if body else "")
+        text = html_to_text(body.group(1) if body else "", links=True)
         posts.append({
             "id": pid.group(1),
             "date": date.group(1) if date else None,
@@ -317,13 +342,15 @@ def extract_event(post, company):
     if not kind:
         return None
 
+    text = without_links(post["text"])
+
     def seg(label):
-        m = re.search(rf"\b{label}\s*[:\-–]\s*([^\n]{{0,90}})", post["text"], re.I)
+        m = re.search(rf"\b{label}\s*[:\-–]\s*([^\n]{{0,90}})", text, re.I)
         return m.group(1) if m else ""
 
     year = (parse_iso(post.get("date") or "") or now()).year
-    date = find_date(seg("date") or seg("deadline"), year) or find_date(post["text"], year)
-    time = find_time(seg("updated time") or seg("time") or seg("deadline")) or find_time(post["text"])
+    date = find_date(seg("date") or seg("deadline"), year) or find_date(text, year)
+    time = find_time(seg("updated time") or seg("time") or seg("deadline")) or find_time(text)
     if not date or not time:
         return None
     try:
@@ -333,6 +360,187 @@ def extract_event(post, company):
     venue = re.sub(r"\s+", " ", seg("venue")).strip()[:60]
     return {"id": post["id"], "company": company, "kind": kind[1], "icon": kind[2], "at": iso(at),
             "venue": venue, "title": post["title"], "link": post["link"]}
+
+
+def where(e):
+    """' · venue · 💺 Your room: LH 101' for an event line (your room from the seating sheet, when known)."""
+    out = f" · {e['venue']}" if e.get("venue") and not (e.get("seat") and re.search(r"announc|tba|tbd", e["venue"], re.I)) else ""
+    return out + (f" · 💺 Your room: *{e['seat']}*" if e.get("seat") else "")
+
+
+def post_event_times(posts, jobs):
+    """{post id: when its test/PPT/interview is}, so the website can grey out ones that are over."""
+    out = {}
+    for p in posts:
+        e = extract_event(p, company_of(p, jobs))
+        if e:
+            out[p["id"]] = e["at"]
+    return out
+
+
+# ---------- your room, from seating sheets linked in posts ----------
+
+SEAT_LINE = re.compile(r"seat|seating|allot|arrangement|venue|room", re.I)
+SEAT_DAYS = 4            # seating links in posts from the last 4 days
+SEAT_RECHECK = 30 * 60   # re-read a sheet every 30 min while its test is still ahead (sheets get updated)
+SEAT_MAX_BYTES = 15 * 1024 * 1024
+
+
+def seat_links(post):
+    """Links on lines like "Seating Arrangement: Click Here (https://…)"."""
+    return [u for line in post["text"].split("\n") if SEAT_LINE.search(without_links(line)) for u in LINK_IN_TEXT.findall(line)]
+
+
+def sheet_download_url(url):
+    u = urllib.parse.urlparse(url)
+    if u.netloc == "bighome.iitb.ac.in" and "/s/" in u.path:  # IITB Nextcloud public share
+        return f"https://bighome.iitb.ac.in/index.php/s/{u.path.split('/s/')[1].split('/')[0]}/download"
+    if u.netloc == "docs.google.com" and "/spreadsheets/d/" in u.path:
+        return f"https://docs.google.com/spreadsheets/d/{u.path.split('/d/')[1].split('/')[0]}/export?format=xlsx"
+    if u.netloc == "drive.google.com" and "/file/d/" in u.path:
+        return f"https://drive.google.com/uc?export=download&id={u.path.split('/d/')[1].split('/')[0]}"
+    return None
+
+
+def xlsx_rows(data):
+    """[(header cells, row cells)] for every row of every sheet."""
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(__import__("io").BytesIO(data)) as z:
+        names = z.namelist()
+        shared = ["".join(t.text or "" for t in si.iter(ns + "t"))
+                  for si in ElementTree.fromstring(z.read("xl/sharedStrings.xml")).findall(ns + "si")] \
+            if "xl/sharedStrings.xml" in names else []
+        out = []
+        for sheet in sorted(n for n in names if re.match(r"xl/worksheets/sheet\d+\.xml$", n)):
+            header = None
+            for r in ElementTree.fromstring(z.read(sheet)).iter(ns + "row"):
+                cells = []
+                for c in r.findall(ns + "c"):
+                    v = c.find(ns + "v")
+                    if c.get("t") == "s" and v is not None:
+                        cells.append(shared[int(v.text)])
+                    else:
+                        cells.append(v.text if v is not None else "".join(t.text or "" for t in c.iter(ns + "t")))
+                cells = [(x or "").strip() for x in cells]
+                if header is None and any(cells):
+                    header = cells
+                    continue
+                out.append((header, cells))
+        return out
+
+
+def pdf_rows(data):
+    """[(header cells, row cells)] from a PDF table, via pdftotext -layout (columns = runs of 2+ spaces)."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+        f.write(data)
+        f.flush()
+        text = subprocess.run(["pdftotext", "-layout", f.name, "-"], capture_output=True, text=True, timeout=60).stdout
+    out, header = [], None
+    for line in text.split("\n"):
+        cells = [c.strip() for c in re.split(r"\s{2,}", line.strip()) if c.strip()]
+        if not cells:
+            continue
+        if re.search(r"\broll\b", line, re.I):
+            header = cells
+            continue
+        out.append((header, cells))
+    return out
+
+
+def my_seat(rows, roll, name):
+    """Your room (and seat, if the sheet has one) from your row, e.g. "LH 101" or "LA001 A11"; None if you're not listed."""
+    roll_re = re.compile(rf"(?<![A-Za-z0-9]){re.escape(roll)}(?![A-Za-z0-9])", re.I)
+    name_words = {w.lower() for w in (name or "").split()}
+    for header, cells in rows:
+        if not any(roll_re.search(c) for c in cells):
+            continue
+        keep = []
+        for i, c in enumerate(cells):
+            label = header[i] if header and len(header) == len(cells) else ""
+            rest = roll_re.sub("", c).strip(" -:|")
+            if not rest or re.search(r"name|roll|^s\.?\s?no|serial|^sr|^sl|email|branch|dept|program", label, re.I):
+                continue
+            if (i == 0 and rest.isdigit()) or not re.search(r"\d", rest) and (not label or all(w.lower().strip(".,") in name_words for w in rest.split())):
+                continue  # serial number, or a name
+            if not re.search(r"\d", rest) and not label:
+                continue
+            room_label = re.search(r"venue|room|lab|hall|location|centre|center", label, re.I)
+            keep.append(rest if not label or room_label else f"{label}: {rest}")
+        seat = " · ".join(keep)[:60]
+        return seat or "listed (room not shown)"
+    return None
+
+
+def fetch_seat(url, me):
+    """Downloads a seating sheet (read-only GET), finds your row and returns (seat or None); the file isn't kept."""
+    dl = sheet_download_url(url)
+    if not dl:
+        raise ValueError("unsupported link")
+    req = urllib.request.Request(dl, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = r.read(SEAT_MAX_BYTES)
+    if data[:4] == b"%PDF":
+        rows = pdf_rows(data)
+    elif data[:2] == b"PK":
+        rows = xlsx_rows(data)
+    else:
+        raise ValueError("not a PDF or spreadsheet")
+    return my_seat(rows, me["roll"], me.get("name", ""))
+
+
+def update_seats(state, jobs, job_list, notify=True):
+    """Finds your room in seating sheets linked from recent posts about your companies; WhatsApp when it's found or
+    changes; puts it on the matching test (reminders, website). Only your own row is kept."""
+    me = state.get("me") or {}
+    if not me.get("roll"):
+        return
+    seats = {u: r for u, r in (state.get("seats") or {}).items()
+             if (parse_iso(r.get("postDate") or "") or now()) > now() - timedelta(days=10)}
+    events = state.get("events") or []
+    cutoff = now() - timedelta(days=SEAT_DAYS)
+    msgs = []
+    for p in relevant_posts(state.get("posts") or [], job_list):
+        posted = parse_iso(p.get("date") or "")
+        if not posted or posted < cutoff:
+            continue
+        company = company_of(p, jobs)
+        ahead = [e for e in events if e["company"] == company and parse_iso(e["at"]) > now() - timedelta(hours=1)]
+        for url in seat_links(p):
+            old = seats.get(url)
+            if old and (not ahead or now().timestamp() - old.get("checkedAt", 0) < SEAT_RECHECK):
+                continue
+            rec = {"postId": p["id"], "company": company, "postDate": p["date"], "checkedAt": now().timestamp()}
+            try:
+                rec["seat"] = fetch_seat(url, me)
+                rec["found"] = rec["seat"] is not None
+            except Exception as e:  # noqa: BLE001 - a bad link shouldn't stop the sync
+                seats[url] = {**(old or {}), **rec, "error": str(e)[:120]}
+                continue
+            changed = old is None or "found" not in old or old.get("seat") != rec["seat"]
+            fresh_post = posted > now() - timedelta(hours=24)
+            if notify and changed and (ahead or fresh_post):
+                ev = ahead[0] if ahead else None
+                when_line = f"\n{ev['icon']} {ev['kind']} {when(ev['at'])} ({until(ev['at'])})" if ev else ""
+                if rec["found"]:
+                    msgs.append(f"💺 *{company}*: your room is *{rec['seat']}*"
+                                + (" (updated)" if old and old.get("found") else "") + f"{when_line}\n{url}")
+                elif old is None or old.get("found"):
+                    msgs.append(f"💺 *{company}*: your roll number isn't in the seating sheet. Check it yourself:{when_line}\n{url}")
+            seats[url] = rec
+    state["seats"] = seats
+    # Your room on each test: from the newest sheet for that company posted before it (within a week).
+    found = sorted((r for r in seats.values() if r.get("found")), key=lambda r: r["postDate"], reverse=True)
+    for e in events:
+        at = parse_iso(e["at"])
+        r = next((r for r in found if r["company"] == e["company"]
+                  and timedelta(0) <= at - parse_iso(r["postDate"]) <= timedelta(days=7)), None)
+        if r:
+            e["seat"] = r["seat"]
+        else:
+            e.pop("seat", None)
+    state["postSeats"] = {r["postId"]: r["seat"] for r in found}
+    if msgs:
+        send_digest("\n\n".join(msgs), msgs, state=state)
 
 
 def extract_events(posts, jobs):
@@ -353,7 +561,7 @@ def describe_post(p, jobs):
         return f"🎉 Your name is in: *{p['title']}*"
     e = extract_event(p, company)
     if e and parse_iso(e["at"]) > now():
-        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + (f" · {e['venue']}" if e["venue"] else "")
+        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + where(e)
     rest = "|".join(p["title"].split("|")[1:]).strip()
     return f"📢 *{company}*: {rest or p['title']}"
 
@@ -653,10 +861,13 @@ def sync():
     # Blog (a hiccup isn't a logout: keep old posts, retry next time, warn after an hour)
     first_run = not state.get("lastSync")
     jar = cookie_jar(session.get("cookies", []))
-    result = read_blog(state, me, jar, first_run)
+    # Re-read every page (not just new posts) on the first run or when the post text format changed.
+    result = read_blog(state, me, jar, first_run or state.get("postFormat") != POST_FORMAT)
     session["cookies"] = jar_cookies(jar)  # keep any refreshed cookies
     save(SESSION, session, private=True)
     blog = result if "known" in result else None
+    if blog:
+        state["postFormat"] = POST_FORMAT
     known = blog["known"] if blog else {p["id"]: p for p in state.get("posts", [])}
     fresh = blog["fresh"] if blog else []
     failing_since = None if blog else (state.get("blogFailingSince") or now().timestamp())
@@ -680,7 +891,12 @@ def sync():
         "error": "Couldn't read the placement blog for over an hour (still retrying). JAFs and reminders are up to date."
                  if blog_warn else None,
         "seenOpenIds": sorted(seen_open | {j["id"] for j in open_jobs}),
+        "postEvents": post_event_times(relevant_posts(all_posts, list(jobs.values())), jobs),
     })
+    try:
+        update_seats(state, jobs, job_list, notify=not first_run)
+    except Exception as e:  # noqa: BLE001 - seats are a bonus; never break the sync
+        print(f"seats: {e}", file=sys.stderr)
 
     # Messages about what's new
     new_posts = sorted(relevant_posts(fresh, job_list), key=lambda p: not p.get("mentionsMe"))
@@ -720,7 +936,7 @@ def check_reminders(state):
     for e in visible_events(state.get("events") or []):
         # Keyed by blog post: when a company posts again about a test, its reminders start again.
         consider(f"ev:{e['id']}:{e['at']}", e["at"],
-                 f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + (f" · {e['venue']}" if e["venue"] else ""))
+                 f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + where(e))
     for j in state.get("openJobs") or []:
         if j["signed"] or not (j["eligible"] or j["bonus"]):
             continue
@@ -758,7 +974,7 @@ def today_text(state, title=None):
     lines = [title or f"📅 *Today, {local.strftime('%a %-d %b')}*"]
     if events:
         lines.append("*Tests, PPTs & deadlines*\n" + "\n".join(
-            f"{e['icon']} {clock(e['at'])} · *{e['company']}*: {e['kind']}" + (f" · {e['venue']}" if e["venue"] else "")
+            f"{e['icon']} {clock(e['at'])} · *{e['company']}*: {e['kind']}" + where(e)
             for e in events))
     if closing:
         lines.append("*JAFs closing today (not signed)*\n" + "\n".join(
@@ -868,7 +1084,7 @@ def catchup_parts(state):
 
     text = "\n\n".join(filter(None, [
         "*IITB placement catch-up*",
-        section("Coming up (next 48 h)", [f"{e['icon']} *{e['company']}*: {e['kind']} {when(e['at'])}" + (f" · {e['venue']}" if e["venue"] else "") for e in events]),
+        section("Coming up (next 48 h)", [f"{e['icon']} *{e['company']}*: {e['kind']} {when(e['at'])}" + where(e) for e in events]),
         section("JAFs you can still sign, closing within 24 h", [f"⏰ *{short_name(j['company'])}* closes {until(j['closesAt'])} ({when(j['closesAt'])}): {j['title']} · {money(j['ctc'], j['currency'])}" for j in closing]),
         section("Updates in the last 24 h", [describe_post(p, jobs) for p in recent]),
     ]))
@@ -912,7 +1128,7 @@ def evening_plan(state):
     tonight = local.replace(hour=23, minute=59, second=59)
     early = (local + timedelta(days=1)).replace(hour=10, minute=0, second=0)
     def items(until_dt):
-        events = [(e["at"], f"{e['icon']} {clock(e['at'])} · *{e['company']}*: {e['kind']}" + (f" · {e['venue']}" if e["venue"] else ""))
+        events = [(e["at"], f"{e['icon']} {clock(e['at'])} · *{e['company']}*: {e['kind']}" + where(e))
                   for e in visible_events(state.get("events") or []) if now() < parse_iso(e["at"]) <= until_dt]
         jafs = [(j["closesAt"], f"⏰ {clock(j['closesAt'])} · *{short_name(j['company'])}* JAF closes: {j['title']} · "
                  f"{money(j['ctc'], j['currency'])} · not signed yet")
@@ -944,7 +1160,7 @@ def ping_health(ok, detail=""):
 
 
 def write_web(state):
-    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error")})
+    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error", "postEvents", "postSeats")})
 
 
 def main():

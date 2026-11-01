@@ -22,9 +22,31 @@ export function companyPatterns(name) {
   return res;
 }
 
+// Post text keeps where links point as "Click Here (https://…)"; these helpers find or drop those parts.
+const LINK_IN_TEXT = / ?\((https?:\/\/[^\s()]+)\)/g;
+export const withoutLinks = text => String(text ?? '').replace(LINK_IN_TEXT, '');
+
+// Post text as HTML: escaped, with "label (https://…)" shown as "label [docs.google.com ↗]" and bare URLs clickable.
+export function linkify(text) {
+  const s = String(text ?? '');
+  const re = / ?\((https?:\/\/[^\s()]+)\)|(https?:\/\/[^\s()<>"']*[^\s()<>"'.,;:!?])/g;
+  let out = '', last = 0;
+  for (const m of s.matchAll(re)) {
+    out += esc(s.slice(last, m.index));
+    const url = m[1] || m[2];
+    let host = url;
+    try { host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* keep the url */ }
+    out += m[1]
+      ? ` <a class="plink" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(host)} ↗</a>`
+      : `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(s.slice(last));
+}
+
 // Which of your jobs a blog post is about (by company name in its title / opening lines).
 export function matchJobs(post, jobs) {
-  const head = `${post.title} ${post.text.slice(0, 300)}`;
+  const head = `${post.title} ${withoutLinks(post.text).slice(0, 300)}`;
   return jobs.filter(j => companyPatterns(j.company).some(re => re.test(head))).map(j => j.id);
 }
 
@@ -147,3 +169,12 @@ export function dayLabel(iso) {
   return new Date(iso).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short' });
 }
 export const timeOf = iso => new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' });
+
+// label / value can be [full, short]: phones show the short one.
+export function stat(label, value, sub, hot = false, urgent = false) {
+  const [lf, ls] = [label].flat(), [vf, vs] = [value].flat();
+  const two = (f, s, cls) => s == null || s === f ? `<div class="${cls}">${esc(f)}</div>`
+    : `<div class="${cls}"><span class="full">${esc(f)}</span><span class="short">${esc(s)}</span></div>`;
+  return `<div class="stat ${hot ? 'hot' : ''}" title="${esc(lf)}: ${esc(vf)}${sub ? ` (${esc(sub)})` : ''}">${two(lf, ls, 'label')}${
+    two(vf, vs, `value ${urgent ? 'urgent' : ''}`)}<div class="sub">${esc(sub)}</div></div>`;
+}

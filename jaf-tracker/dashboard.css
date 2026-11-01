@@ -384,3 +384,64 @@ footer { margin-top: 32px; font-size: 12px; text-align: center; }
   .post .dot { display: none; }
   .body { padding: 0 12px 12px; }
 }
+
+/* Links inside blog posts */
+.body pre a { color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+.body pre a.plink { display: inline-block; text-decoration: none; word-break: normal; font-size: 12.5px; padding: 1px 9px; margin: 1px 0;
+  border-radius: 999px; background: var(--accent-soft); }
+
+/* Tests/PPTs that are over; your room from the seating sheet */
+.kind.k-done { background: transparent; border: 1px solid var(--line); color: var(--muted); text-decoration: none; }
+.post.done .title { color: var(--muted); }
+.seat { font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
+
+/* Open JAFs count (JAFs you can sign): green, not the red "unread" badge */
+.tabcount.go { background: #16a34a; }
+
+/* ---------- Phone polish ---------- */
+@media (max-width: 640px) {
+  /* Full screen when installed: keep clear of the notch / status bar */
+  body { padding-top: max(12px, env(safe-area-inset-top)); }
+
+  /* Stats: all in one row that fits the screen, short labels, no description line */
+  .stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; margin: 12px 0 12px; }
+  .stat { padding: 7px 4px; border-radius: 10px; text-align: center; min-width: 0; }
+  .stat .label { font-size: 9.5px; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .value { font-size: 15px; line-height: 1.2; margin-top: 2px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  .stat .sub { display: none; }
+  .stat .full { display: none; }
+  /* Search and filters stay at the top while you scroll */
+  .toolbar { position: sticky; top: 0; z-index: 9; margin: 0 -12px 14px; padding: 8px 12px;
+    background: color-mix(in srgb, var(--bg) 90%, transparent);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); gap: 8px; }
+  .toolbar input { padding: 9px 12px; }
+  /* Open JAFs: filter chips and sort on one row */
+  .sortbar { flex-wrap: nowrap; gap: 8px; }
+  .sortbar .chips { flex: 1; min-width: 0; }
+  .sortbar select { flex: none; font-size: 13px; font-weight: 600; padding: 5px 8px; border-radius: 999px; max-width: 42%; }
+
+  /* Post header on one line: label · company (shortened if long) · time */
+  .post .meta { flex-wrap: nowrap; min-width: 0; }
+  .post .meta .kind, .post .meta .seat, .post .meta .time { flex: none; }
+  .post .meta .co { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .post .title { font-size: 15px; line-height: 1.35; }
+  .feed { gap: 8px; }
+
+  /* Cards a little tighter */
+  .job { padding: 12px 12px 10px; }
+  .job dl { gap: 4px 12px; margin: 10px 0 8px; }
+  .job .tags { margin-top: 8px; }
+  .cardfoot { margin-top: 8px; }
+  .up { padding: 10px 12px; }
+}
+
+/* Press feedback on touch screens */
+@media (hover: none) {
+  .post .head, .job .latest, .up, .nextup, .chip, .golink, button, .tabs a { transition: transform .08s ease, opacity .08s ease; }
+  .post .head:active, .up:active, .nextup:active, .chip:active, .golink:active, button:active { transform: scale(.97); opacity: .85; }
+  .tabs a:active .ticon { transform: scale(.9); }
+}
+
+/* Stat tiles: full text on wide screens, short on phones (see the phone block) */
+.stat .short { display: none; }
+@media (max-width: 640px) { .stat .short { display: inline; } }

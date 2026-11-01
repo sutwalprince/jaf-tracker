@@ -91,6 +91,13 @@ question by text and by voice note.
   views), served by `web.py` with `web-shim.js` standing in for `chrome.*`. Change the pages once, test
   both in the extension and on the site, then `server/deploy.sh`. Keep it one page: separate pages cost a
   full reload per tab through Tailscale's relay. New files must be added to `FILES` in `web.py`.
+- **Testing the website headless:** the page keeps a push stream (`/api/events`) open, so
+  `chrome --headless --virtual-time-budget/--dump-dom` never finishes. Drive Chrome over the DevTools
+  protocol instead (`--remote-debugging-port`, `Runtime.evaluate`, `Page.captureScreenshot`).
+- **Seating sheets name other students.** Read them only on the server, keep only the student's own row,
+  never print or save the rest. Most are PDFs on `bighome.iitb.ac.in` (needs `pdftotext`).
+- **Post text keeps links as `label (url)`.** Anything parsing post text for dates/venues must use
+  `without_links()` / `withoutLinks()` first; the website renders links with `linkify()`.
 - **Chrome caches extension background code by version**: bump `version` in `manifest.json` whenever you
   change the extension, then reload it in `chrome://extensions`.
 - **Reminders**: they're keyed by blog post (a company's repeat post restarts them, by design) and are not

@@ -161,10 +161,23 @@ server/deploy.sh
 
 It copies the code, restarts the website and WhatsApp service, and runs one sync.
 
-The website's **Sync now** button calls `POST /api/sync` on `web.py`, which starts `jaf-sync.service`
-(at most once a minute, and never while a sync is running); `GET /api/sync` says whether one is running.
-`web.py` gzips responses and answers unchanged files with `304`, and the site keeps the last data in the
-browser's `localStorage`, so it opens instantly over Tailscale's relays.
+How the website stays current (`web.py` + `web-shim.js`):
+- **Push:** `GET /api/events` is a Server-Sent Events stream. `web.py` checks every 2 s whether
+  `~/jaf-web-data.json`, `read.json` or `hidden.json` changed and, if so, sends `update`; the page then
+  reloads `data.json` and redraws. At most 20 streams; each ends after 30 min and the browser reconnects.
+- **Sync now:** `POST /api/sync` starts `jaf-sync.service` (at most once a minute, never while one runs);
+  `POST /api/sync?stale=1`, sent when the site is opened, only starts one if the last sync is over 5 min
+  old. `GET /api/sync` says whether a sync is running.
+- **Fast over Tailscale's relays:** gzip, `ETag` / `304` for unchanged files, and the last data kept in the
+  browser's `localStorage`, so pages draw at once and refresh in the background.
+- **Installable:** `site.webmanifest` + `icons/icon192.png` / `icon512.png`.
+
+**Your room from seating sheets.** Posts keep their links as `Click Here (https://…)`. For posts about your
+companies from the last 4 days, links on "seating / seat allotment / venue" lines are downloaded (IITB
+bighome shares as PDF via `pdftotext` from `poppler-utils`, Google Sheets as xlsx), your row is found by
+roll number, and only your room/seat is kept (`state.json → seats`); the file is never saved. While that
+company's test is still ahead, the sheet is re-read every 30 min. Changing `POST_FORMAT` in `jaf_sync.py`
+makes the next sync re-read the whole blog once (GET only, no repeat messages).
 
 ## Troubleshooting
 
