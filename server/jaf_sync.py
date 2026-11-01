@@ -15,9 +15,13 @@ for things due before then. A morning plan goes out daily (config.json → morni
 config.json → evening (default 8 pm).
 If config.json has "healthcheck" (a healthchecks.io ping URL), every run pings it.
 
-Usage:  jaf_sync.py [sync | catchup | morning | evening | status]
+New JAFs you can sign get an AI summary on WhatsApp (Gemini or Claude, see jaf_ai.py) within a hard monthly budget.
+
+Usage:  jaf_sync.py [sync | catchup | morning | evening | status | ai
+                     | summarize-open [--dry-run] [--limit N] | set-gemini-key | set-anthropic-key]
 """
 import fcntl
+import getpass
 import html
 import http.cookiejar
 import json
@@ -34,6 +38,7 @@ from pathlib import Path
 
 HOME = Path.home()
 DIR = HOME / "jaf-sync"
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for jaf_ai.py next to this file (python -I skips it)
 SESSION = DIR / "session.json"
 STATE = DIR / "state.json"
 CONFIG = DIR / "config.json"
@@ -684,8 +689,9 @@ def sync():
     open_lines = [f"🆕 New JAF you can sign{'' if j['eligible'] else ' (bonus)'}: *{short_name(j['company'])}* – "
                   f"{j['title']} · {money(j['ctc'], j['currency'])} · closes {when(j['closesAt'])}" for j in new_open]
     if not first_run and (lines or open_lines):
+        open_items = [ai_summary(j, line, state) for j, line in zip(new_open, open_lines)]
         send_digest("*IITB placement updates*\n\n" + "\n\n".join(lines + open_lines),
-                    [full_post(p, l) for p, l in zip(new_posts, lines)] + open_lines, state=state)
+                    [full_post(p, l) for p, l in zip(new_posts, lines)] + open_items, state=state)
     return state
 
 
@@ -695,20 +701,24 @@ def check_reminders(state):
     sent_set = set(sent)
     due, urgent = [], []
     _, quiet_end = quiet_window()
+    quiet = in_quiet()
 
     def consider(key, at, line):
         left = (parse_iso(at) - now()).total_seconds() / 3600
         h = next((x for x in REMIND_HOURS if 0 < left <= x), None)  # tightest window we're in
         if h is None or f"{key}:{h}" in sent_set:
             return
+        is_urgent = parse_iso(at) < quiet_end + timedelta(hours=1)  # due before you'd see the morning messages
+        if quiet and not is_urgent:
+            return  # wait: after quiet hours it's written fresh, with the right countdown
         for x in REMIND_HOURS:
             if x >= h and f"{key}:{x}" not in sent_set:
                 sent_set.add(f"{key}:{x}")
                 sent.append(f"{key}:{x}")
-        # Anything due before you'd see the morning batch can't wait for quiet hours to end.
-        (urgent if parse_iso(at) < quiet_end + timedelta(hours=1) else due).append(line)
+        (urgent if is_urgent else due).append(line)
 
     for e in visible_events(state.get("events") or []):
+        # Keyed by blog post: when a company posts again about a test, its reminders start again.
         consider(f"ev:{e['id']}:{e['at']}", e["at"],
                  f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + (f" · {e['venue']}" if e["venue"] else ""))
     for j in state.get("openJobs") or []:
@@ -776,6 +786,34 @@ def open_text(state, limit=20):
     return "\n".join(lines)
 
 
+def ai_summary(job, fallback, state):
+    """Claude's summary of a JAF for WhatsApp, or the plain one-liner if AI is off, failing or over budget."""
+    try:
+        import jaf_ai  # needs the anthropic SDK (in ~/jaf-sync/wa-venv)
+    except ImportError:
+        return fallback
+    if not jaf_ai.settings()["summaries"]:
+        return fallback
+    try:
+        return jaf_ai.summarize_jaf(job)
+    except jaf_ai.BudgetExceeded as e:
+        if state.get("aiBudgetAlert") != jaf_ai.month():  # say so once a month
+            state["aiBudgetAlert"] = jaf_ai.month()
+            return f"{fallback}\n\n🔒 {e}: AI summaries pause until the 1st (plain messages meanwhile)."
+        return fallback
+    except jaf_ai.AIUnavailable as e:
+        state["aiError"] = str(e)
+        return fallback
+
+
+def ai_usage_line():
+    try:
+        import jaf_ai
+        return jaf_ai.usage_text()
+    except ImportError:
+        return "AI: not installed"
+
+
 def status_text(state):
     jwt = decode_jwt(load(SESSION, {}).get("token", ""))
     last = parse_iso(state.get("lastSync") or "")
@@ -787,7 +825,8 @@ def status_text(state):
              + (f", expires {when(iso(datetime.fromtimestamp(jwt['exp'], timezone.utc)))}" if jwt and jwt.get("exp") else ""),
              "Blog: " + ("OK" if not state.get("blogError") else state["blogError"]),
              f"Your JAFs: {len(state.get('jobs') or {})} · open JAFs: {len(state.get('openJobs') or [])} · posts: {len(state.get('posts') or [])}",
-             "Hidden companies: " + (", ".join(short_name(h) for h in hidden) if hidden else "none")]
+             "Hidden companies: " + (", ".join(short_name(h) for h in hidden) if hidden else "none"),
+             ai_usage_line()]
     if state.get("error"):
         lines.append(f"⚠️ {state['error']}")
     return "\n".join(lines)
@@ -911,6 +950,28 @@ def write_web(state):
 def main():
     DIR.mkdir(exist_ok=True)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "sync"
+    if cmd == "set-gemini-key":  # typed in, never shown, stored only in config.json (0600)
+        key = getpass.getpass("Gemini API key from aistudio.google.com (input hidden): ").strip()
+        if len(key) < 20:
+            sys.exit("That doesn't look like a Gemini API key.")
+        cfg = load(CONFIG, {})
+        cfg.setdefault("gemini", {}).update({"apiKey": key})
+        cfg.setdefault("ai", {}).update({"provider": "gemini"})
+        cfg["ai"].setdefault("monthlyLimitInr", 250)
+        save(CONFIG, cfg, private=True)
+        print("Saved. AI now uses Gemini (free tier), with a ₹250 monthly cap if billing is ever turned on.")
+        return
+    if cmd == "set-anthropic-key":  # typed in, never shown, stored only in config.json (0600)
+        key = getpass.getpass("Anthropic API key (input hidden): ").strip()
+        if not key.startswith("sk-ant-"):
+            sys.exit("That doesn't look like an Anthropic API key (it starts with sk-ant-).")
+        cfg = load(CONFIG, {})
+        cfg.setdefault("anthropic", {}).update({"apiKey": key, "model": "claude-sonnet-5-5"})
+        cfg.setdefault("ai", {}).update({"provider": "claude"})
+        cfg["ai"].setdefault("monthlyLimitInr", 250)
+        save(CONFIG, cfg, private=True)
+        print("Saved. AI now uses Claude, with a ₹250 monthly limit.")
+        return
     with open(DIR / ".lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time
         if cmd == "sync":
@@ -930,6 +991,20 @@ def main():
             print(f"synced: auth={state.get('auth')} jobs={len(state.get('jobs') or {})} "
                   f"open={len(state.get('openJobs') or [])} posts={len(state.get('posts') or [])} "
                   f"blogError={state.get('blogError')} error={state.get('error')}")
+        elif cmd == "ai":
+            print(ai_usage_line())
+        elif cmd == "summarize-open":  # AI summaries of every JAF you can sign right now
+            state = load(STATE, {})
+            args = sys.argv[2:]
+            limit = int(args[args.index("--limit") + 1]) if "--limit" in args else None
+            jafs = signable(state)[:limit]
+            items = [ai_summary(j, f"🆕 *{short_name(j['company'])}*: {j['title']}", state) for j in jafs]
+            if "--dry-run" in args:
+                print("\n\n---\n\n".join(items))
+            else:
+                send_digest(f"*JAFs you can sign* ({len(items)})", items, state=state, urgent=True)
+                print(f"sent {len(items)} summaries")
+            save(STATE, state)
         elif cmd == "morning":  # send today's plan now (for testing)
             state = load(STATE, {})
             state.pop("lastMorning", None)

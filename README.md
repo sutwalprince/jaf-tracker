@@ -34,10 +34,10 @@ applies, uploads or changes anything.
 | When | What |
 |---|---|
 | As it happens | New blog posts about your companies, posts naming your roll number (shortlists), new JAFs you're eligible for |
-| 24 h, 12 h, 4 h before | Tests, PPTs, registration deadlines, JAFs you can sign but haven't, your portal login expiring |
+| 24 h, 12 h, 4 h before | Tests, PPTs, registration deadlines, JAFs you can sign but haven't, your portal login expiring (a company's new post about a test starts its reminders again) |
 | 8 am | Today's plan: tests/PPTs with times and venues, JAFs closing today |
 | 8 pm | Today's remaining deadlines, plus anything due early tomorrow |
-| 00:00–07:00 | Quiet: held and sent at 7 am, except reminders for things due before then |
+| 00:00–07:00 | Quiet: updates are held and sent at 7 am; reminders wait and are written fresh after 7 am, except ones due before then |
 | If something breaks | Login needed, IITB SSO login needed, blog unreachable; healthchecks.io alerts you if syncs stop |
 
 **WhatsApp commands.** Text the spare number from your main number (it ignores everyone else):
@@ -50,6 +50,14 @@ applies, uploads or changes anything.
 | `hide <company>` / `unhide <company>` | Stop or restart updates and reminders for a company |
 | `status` | Last sync, login expiry, blog, WhatsApp |
 | `catchup` | What's coming up, then each update from the last day |
+
+**AI (Google Gemini free tier by default, or Claude; hard limit ₹250 a month).** Every new JAF you're eligible for (or bonus) arrives
+on WhatsApp as a proper summary: pay, location, eligibility, cutoff, bond, rounds with durations, key
+requirements, deadline and a one-line takeaway. Anything you send the spare number that isn't a command,
+typed or as a **voice note**, is answered from the tracker's data: "how many software engineer jobs are
+open?", "which JAFs close today?", "what does Juspay's JD ask for?". Voice notes are transcribed on the
+server itself. When the month's budget is used up, summaries fall back to the plain format and questions get
+"budget used up" until the 1st.
 
 **Website** (private: opens only on your own Tailscale devices): *My JAFs & updates* (your signed
 JAFs with CTC, rounds and durations, blog updates, upcoming events, Hide/Unhide) and *Open JAFs*
@@ -70,13 +78,18 @@ hidden companies are shared across all your devices.
 1. Set up the server: [`server/README.md`](server/README.md).
 2. Install the extension on your laptop: [`jaf-tracker/README.md`](jaf-tracker/README.md).
 
+Setting this up for someone else with an AI coding assistant (Claude Code, Codex, Copilot, …)?
+Point it at [`AGENTS.md`](AGENTS.md): the step-by-step guide, rules and known pitfalls written for it.
+
 ## Project layout
 
 | Path | What |
 |---|---|
 | `jaf-tracker/` | The Chrome extension (its pages are also served as the website) |
 | `server/jaf_sync.py` | The sync: portal, blog, events, reminders, daily messages, Telegram; queues WhatsApp |
-| `server/jaf_whatsapp.py` | The always-on WhatsApp service: sends the queue, answers commands, links the spare number |
+| `server/jaf_whatsapp.py` | The always-on WhatsApp service: sends the queue, answers commands and questions, links the spare number |
+| `server/jaf_ai.py` | The AI (Gemini or Claude): JAF summaries and answers, with the monthly budget |
+| `server/jaf_transcribe.py` | Voice-note transcription on the server (faster-whisper) |
 | `server/web.py`, `server/web-shim.js` | The private website, and the shim that lets the extension's pages run as a site |
 | `server/setup.sh` | One-time setup of a fresh server |
 | `server/deploy.sh` | Copies your changes to the server and restarts what's affected |

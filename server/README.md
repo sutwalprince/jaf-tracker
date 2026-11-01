@@ -7,7 +7,9 @@ service, and a private website. A free Oracle Cloud VM (1 GB RAM is enough) work
 | Piece | Runs as | What it does |
 |---|---|---|
 | `jaf_sync.py` | `jaf-sync.timer` (every 15–30 min, random) | Portal API, blog via IITB SSO, events, reminders, 8 am / 8 pm messages, Telegram, queues WhatsApp, website data |
-| `jaf_whatsapp.py serve` | `jaf-whatsapp.service` (always on) | Sends queued WhatsApp messages (typing indicator, random 2–5 s gaps), answers your commands |
+| `jaf_whatsapp.py serve` | `jaf-whatsapp.service` (always on) | Sends queued WhatsApp messages (typing indicator; batches paced 2–5 s apart, replies to you quick), answers your commands, and passes other questions (text or voice) to the AI |
+| `jaf_ai.py` | used by the two above | Gemini (default, free tier) or Claude: summaries of new JAFs you can sign, answers to your questions; hard monthly ₹ cap |
+| `jaf_transcribe.py` | short-lived, per voice note | Transcribes voice notes on the server (faster-whisper `base`), then the audio is deleted |
 | `web.py` | `jaf-web.service` | The private website on `127.0.0.1:8787`, published only to your Tailscale devices; receives your login from the laptop |
 
 All files live in `~/jaf-sync/` (private, `700`) and `~/jaf-web/`.
@@ -100,14 +102,49 @@ systemctl --user enable --now jaf-whatsapp
 
 It only replies to your main number. Incoming messages are never stored.
 
+### AI: JAF summaries and answers (Gemini, or Claude)
+
+**Gemini (default, free tier):** create a key at aistudio.google.com → **Get API key**, then store it on the
+server. It's typed in hidden and saved only in `config.json`:
+
+```bash
+~/jaf-sync/wa-venv/bin/python -I ~/jaf-sync/jaf_sync.py set-gemini-key
+~/jaf-sync/wa-venv/bin/python -I ~/jaf-sync/jaf_sync.py summarize-open --dry-run --limit 1   # try one
+```
+
+It uses `gemini-3.6-flash`, and `gemini-3.5-flash-lite` when the first is busy, slow or out of free quota. On the
+free tier **Google may use your prompts to improve its products**.
+
+**Claude instead (paid):** `jaf_sync.py set-anthropic-key` with a key from console.anthropic.com
+(uses `claude-sonnet-5-5`). Switch back any time with `set-gemini-key`.
+
+Settings in `config.json`:
+
+```json
+"ai":        {"provider": "gemini", "monthlyLimitInr": 250, "usdToInr": 90, "summaries": true, "answers": true},
+"gemini":    {"apiKey": "<key>", "model": "gemini-3.6-flash", "fallbackModel": "gemini-3.5-flash-lite"},
+"anthropic": {"apiKey": "<sk-ant-…>", "model": "claude-sonnet-5-5"}
+```
+
+- **Budget**: every call is priced at the provider's paid rates from its token counts (+15% margin) into
+  `~/jaf-sync/ai-usage.json`; a call that could cross `monthlyLimitInr` isn't made, so even if billing is ever
+  turned on, the month can't go past ₹250. On the Gemini free tier you actually pay nothing.
+  `jaf_sync.py ai` (or the WhatsApp `status` command) shows this month's count.
+- **Sent to the AI provider**: JAF details, blog posts about your companies (shortlists can name other
+  students), your questions. **Not sent**: your login, cookies, tokens, numbers, or voice audio: voice notes
+  are transcribed here and deleted right away.
+
 ## Day-to-day commands (on the server)
 
 ```bash
-python3 -I ~/jaf-sync/jaf_sync.py status      # last sync, login expiry, counts, errors
-python3 -I ~/jaf-sync/jaf_sync.py sync        # sync now
-python3 -I ~/jaf-sync/jaf_sync.py catchup     # send the catch-up now
-python3 -I ~/jaf-sync/jaf_sync.py morning     # send today's plan now
-python3 -I ~/jaf-sync/jaf_sync.py evening     # send tonight's deadlines now
+PY=~/jaf-sync/wa-venv/bin/python
+$PY -I ~/jaf-sync/jaf_sync.py status          # last sync, login expiry, counts, errors, AI spend
+$PY -I ~/jaf-sync/jaf_sync.py sync            # sync now
+$PY -I ~/jaf-sync/jaf_sync.py catchup         # send the catch-up now
+$PY -I ~/jaf-sync/jaf_sync.py morning         # send today's plan now
+$PY -I ~/jaf-sync/jaf_sync.py evening         # send tonight's deadlines now
+$PY -I ~/jaf-sync/jaf_sync.py summarize-open  # AI summaries of every JAF you can sign now
+$PY -I ~/jaf-sync/jaf_sync.py ai              # this month's AI spend
 systemctl --user list-timers jaf-sync.timer   # when the next sync runs
 journalctl --user -u jaf-sync -n 20           # recent syncs
 journalctl --user -u jaf-whatsapp -n 20       # WhatsApp service log
@@ -133,7 +170,8 @@ It copies the code, restarts the website and WhatsApp service, and runs one sync
 | "WhatsApp sender needs linking again" | Re-link the spare number (WhatsApp section above). |
 | No WhatsApp messages | `systemctl --user status jaf-whatsapp`, `cat ~/jaf-sync/wa-status.json`; queued messages wait in `~/jaf-sync/wa-outbox/`. |
 | Website doesn't open | Is Tailscale connected on that device? `sudo tailscale serve status` on the server. |
-| healthchecks.io says "down" | `journalctl --user -u jaf-sync -n 30`; `python3 -I ~/jaf-sync/jaf_sync.py status`. |
+| healthchecks.io says "down" | `journalctl --user -u jaf-sync -n 30`; `~/jaf-sync/wa-venv/bin/python -I ~/jaf-sync/jaf_sync.py status`. |
+| AI replies "couldn't answer" | `$PY -I ~/jaf-sync/jaf_sync.py ai`; re-enter the key with `set-gemini-key`; on the free tier, wait if the daily quota is used up. |
 
 When killing a process over SSH, use its PID (`pgrep`, then `kill <pid>`): `pkill -f <pattern>` also
 matches the SSH command itself and ends your session.

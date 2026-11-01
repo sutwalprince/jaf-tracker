@@ -12,7 +12,7 @@ SYNC="$HOME/jaf-sync"
 WEB="$HOME/jaf-web"
 UNITS="$HOME/.config/systemd/user"
 
-for f in jaf_sync.py jaf_whatsapp.py web.py web-shim.js; do
+for f in jaf_sync.py jaf_whatsapp.py jaf_ai.py jaf_transcribe.py web.py web-shim.js; do
   [ -f "$HOME/$f" ] || { echo "Missing ~/$f. Copy the project files first (see the top of this script)."; exit 1; }
 done
 [ -f "$HOME/jaf-tracker/dashboard.html" ] || { echo "Missing ~/jaf-tracker (the website reuses its pages)."; exit 1; }
@@ -25,7 +25,7 @@ sudo timedatectl set-timezone Asia/Kolkata
 echo "==> Files (private to your user)"
 mkdir -p "$SYNC" "$WEB" "$UNITS"
 chmod 700 "$SYNC"
-mv "$HOME/jaf_sync.py" "$HOME/jaf_whatsapp.py" "$SYNC/"
+mv "$HOME/jaf_sync.py" "$HOME/jaf_whatsapp.py" "$HOME/jaf_ai.py" "$HOME/jaf_transcribe.py" "$SYNC/"
 mv "$HOME/web.py" "$HOME/web-shim.js" "$WEB/"
 # The secret key the laptop extension uses to send your login (copy it to the laptop afterwards).
 [ -f "$SYNC/key" ] || (umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$SYNC/key")
@@ -37,10 +37,10 @@ EOF
 )
 fi
 
-echo "==> WhatsApp library (neonize) in a private virtualenv"
+echo "==> Python libraries in a private virtualenv: WhatsApp (neonize), Claude (anthropic), speech-to-text (faster-whisper)"
 python3 -m venv "$SYNC/wa-venv"
 "$SYNC/wa-venv/bin/pip" install -q --upgrade pip >/dev/null
-"$SYNC/wa-venv/bin/pip" install -q neonize
+"$SYNC/wa-venv/bin/pip" install -q neonize anthropic faster-whisper
 chmod 700 "$SYNC/wa-venv"
 
 echo "==> Services"
@@ -50,7 +50,7 @@ Description=JAF Tracker sync (portal + blog + reminders, no browser)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -I %h/jaf-sync/jaf_sync.py sync
+ExecStart=%h/jaf-sync/wa-venv/bin/python -I %h/jaf-sync/jaf_sync.py sync
 EOF
 
 cat > "$UNITS/jaf-sync.timer" <<'EOF'
@@ -89,7 +89,7 @@ After=network-online.target
 ExecStart=%h/jaf-sync/wa-venv/bin/python -I %h/jaf-sync/jaf_whatsapp.py serve
 Restart=always
 RestartSec=30
-MemoryMax=200M
+MemoryMax=900M
 
 [Install]
 WantedBy=default.target
@@ -115,5 +115,5 @@ cat <<'EOF'
 Done. Next (see server/README.md → After setup):
   1. Install Tailscale and publish the website:  tailscale up  ·  tailscale serve --bg 8787
   2. Copy ~/jaf-sync/key to the laptop and set up "Send login to server" in the extension.
-  3. Optional: Telegram, WhatsApp (pair the spare number), healthchecks.io.
+  3. Optional: Telegram, WhatsApp (pair the spare number), healthchecks.io, AI (set-anthropic-key).
 EOF

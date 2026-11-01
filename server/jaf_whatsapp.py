@@ -5,6 +5,8 @@
                                           - sends what jaf_sync.py queues in ~/jaf-sync/wa-outbox, in order
                                           - answers commands texted from your main number (and nobody else):
                                             today · open · sync · hide <company> · unhide <company> · status · catchup
+                                          - anything else, typed or as a voice note, is answered by Claude (jaf_ai.py)
+                                            from the tracker's data; voice notes are transcribed here (jaf_transcribe.py)
   jaf_whatsapp.py pair <spare number>   links the spare number: prints a pairing code to type on the spare phone
                                         (stop the service first: systemctl --user stop jaf-whatsapp)
 
@@ -37,9 +39,15 @@ DB = str(DIR / "whatsapp.db")
 OUTBOX = DIR / "wa-outbox"
 STATUS = DIR / "wa-status.json"
 MAX_COMMAND_AGE = 600  # seconds; older commands (delivered after a restart) are ignored
+MAX_VOICE_SECONDS = 120
+VOICE_DIR = DIR / "voice"  # voice notes live here only while being transcribed
+WA_PYTHON = DIR / "wa-venv" / "bin" / "python"
+COMMANDS = {"today", "open", "sync", "hide", "unhide", "status", "catchup", "catch-up", "help"}
 GAP_SECONDS = (2.0, 5.0)  # random pause between messages
 TYPING_CHARS_PER_SECOND = 60  # how long "typing…" shows, from the message length…
 TYPING_SECONDS = (1.5, 6.0)  # …kept within these bounds
+QUICK_TYPING_SECONDS = (0.5, 2.5)  # replies to your messages: brief "typing…"
+QUICK_GAP_SECONDS = (1.0, 2.0)
 
 HELP = ("🤖 *JAF Tracker commands*\n"
         "• *today*: today's tests, PPTs and JAF deadlines\n"
@@ -47,7 +55,9 @@ HELP = ("🤖 *JAF Tracker commands*\n"
         "• *sync*: check the portal and blog right now\n"
         "• *hide <company>* / *unhide <company>*: stop or restart updates for a company\n"
         "• *status*: is everything working?\n"
-        "• *catchup*: what's coming up and the last day's updates")
+        "• *catchup*: what's coming up and the last day's updates\n"
+        "Anything else (typed or a voice note) is a question for the AI, e.g. "
+        "_which JAFs close today?_ or _what does Juspay's JD ask for?_")
 
 
 def digits(number):
@@ -85,6 +95,48 @@ def answer(text):
     return [HELP]
 
 
+def ai_answer(question):
+    """Claude's answer from the tracker's data, or a short explanation of why it can't answer."""
+    try:
+        import jaf_ai
+    except ImportError:
+        return "🤖 The AI isn't installed on the server. Try *help* for commands."
+    if not jaf_ai.settings()["answers"]:
+        return "🤖 AI answers are switched off. Try *help* for commands."
+    try:
+        return jaf_ai.answer(question, J.load(J.STATE, {}))
+    except jaf_ai.BudgetExceeded as e:
+        return f"🔒 {e}. It resets on the 1st; commands still work (*help*)."
+    except jaf_ai.AIUnavailable as e:
+        print(f"ai_answer: {e}", file=sys.stderr, flush=True)
+        return f"🤖 The AI couldn't answer right now ({e}). Commands still work (*help*)."
+
+
+def transcribe(client, ev):
+    """The text of a voice note, transcribed on this server; the audio is deleted straight away."""
+    audio = ev.Message.audioMessage
+    if audio.seconds > MAX_VOICE_SECONDS:
+        return None, f"🎙 Voice notes up to {MAX_VOICE_SECONDS // 60} minutes, please."
+    VOICE_DIR.mkdir(mode=0o700, exist_ok=True)
+    path = VOICE_DIR / f"{ev.Info.ID}.ogg"
+    try:
+        path.write_bytes(client.download_any(ev.Message))
+        os.chmod(path, 0o600)
+        state = J.load(J.STATE, {})
+        companies = {J.short_name(j["company"]) for j in list((state.get("jobs") or {}).values()) + (state.get("openJobs") or [])}
+        hints = "JAF, JAFs, PPT, CPI, CTC, shortlist, deadline, interview, signed, eligible. " + ", ".join(sorted(companies))
+        r = subprocess.run([str(WA_PYTHON), "-I", str(DIR / "jaf_transcribe.py"), str(path), hints],
+                           capture_output=True, text=True, timeout=240)
+        text = r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        text = ""
+    finally:
+        path.unlink(missing_ok=True)
+    if not text:
+        return None, "🎙 I couldn't make out that voice note. Could you type it?"
+    return text, None
+
+
 def run_sync():
     """A full sync now (portal + blog), then a short report. New updates arrive as their own messages."""
     before = J.load(J.STATE, {})
@@ -109,16 +161,22 @@ def run_sync():
     return "\n".join(lines)
 
 
-def respond(send, chat, text):
-    """Works out the reply off WhatsApp's event thread (a sync takes a while) and sends it."""
+def respond(send, typing, chat, text):
+    """Works out the reply off WhatsApp's event thread (a sync or the AI takes a while) and sends it."""
     words = text.strip().split(None, 1)
-    if words and words[0].lower().strip("/!.,") == "sync":
+    if not words:
+        return
+    cmd = words[0].lower().strip("/!.,?")
+    if cmd == "sync":
         send(chat, ["🔄 Syncing with the placement portal and blog…"])
         send(chat, [run_sync()])
         return
-    reply = answer(text)
-    if reply:
-        send(chat, reply)
+    if cmd in COMMANDS:
+        send(chat, answer(text))
+        return
+    question = words[1] if cmd == "ask" and len(words) > 1 else text
+    typing(chat)  # "typing…" while Claude thinks
+    send(chat, [ai_answer(question)])
 
 
 def from_main(client, src, main):
@@ -153,21 +211,23 @@ def serve():
         except Exception:  # noqa: BLE001 - cosmetic only, never block a message
             pass
 
-    def send(jid, texts):
-        """One message at a time, in order: shows "typing…" for a bit, sends, then pauses a random 2–5 s."""
+    def send(jid, texts, quick=False):
+        """One message at a time, in order, with "typing…" first. Batches (quick=False) pause a random 2–5 s
+        between messages; replies to you (quick=True) only type briefly, so they arrive fast."""
         with send_lock:
-            for t in texts:
-                for part in J.chunks(t, J.WA_CHUNK):
-                    presence(jid, ChatPresence.CHAT_PRESENCE_COMPOSING)
-                    lo, hi = TYPING_SECONDS
-                    time.sleep(min(hi, max(lo, len(part) / TYPING_CHARS_PER_SECOND)) + random.uniform(0, 1))
-                    client.send_message(jid, part)
-                    presence(jid, ChatPresence.CHAT_PRESENCE_PAUSED)
-                    time.sleep(random.uniform(*GAP_SECONDS))
+            parts = [p for t in texts for p in J.chunks(t, J.WA_CHUNK)]
+            for n, part in enumerate(parts):
+                presence(jid, ChatPresence.CHAT_PRESENCE_COMPOSING)
+                lo, hi = QUICK_TYPING_SECONDS if quick else TYPING_SECONDS
+                time.sleep(min(hi, max(lo, len(part) / TYPING_CHARS_PER_SECOND)) + random.uniform(0, 0.5))
+                client.send_message(jid, part)
+                presence(jid, ChatPresence.CHAT_PRESENCE_PAUSED)
+                if n < len(parts) - 1:
+                    time.sleep(random.uniform(*(QUICK_GAP_SECONDS if quick else GAP_SECONDS)))
 
     def mark_read(ev):
         """Blue ticks on your command, a moment after it arrives."""
-        time.sleep(random.uniform(0.5, 2.0))
+        time.sleep(random.uniform(0.3, 0.8))
         try:
             src = ev.Info.MessageSource
             client.mark_read(ev.Info.ID, chat=src.Chat, sender=src.Sender, receipt=ReceiptType.READ)
@@ -203,10 +263,22 @@ def serve():
         if time.time() - ts > MAX_COMMAND_AGE:
             return
         text = message_text(ev)
+        voice = ev.Message.HasField("audioMessage")
+        if not text and not voice:
+            return  # stickers, photos and the like
 
         def handle():
             mark_read(ev)
-            respond(send, src.Chat, text)
+            question = text
+            if voice:
+                presence(src.Chat, ChatPresence.CHAT_PRESENCE_COMPOSING)
+                question, problem = transcribe(c, ev)
+                if problem:
+                    send(src.Chat, [problem], quick=True)
+                    return
+                send(src.Chat, [f"🎙 You said: _{question}_"], quick=True)
+            respond(lambda chat, texts: send(chat, texts, quick=True),
+                    lambda chat: presence(chat, ChatPresence.CHAT_PRESENCE_COMPOSING), src.Chat, question)
 
         threading.Thread(target=handle, daemon=True).start()
 
