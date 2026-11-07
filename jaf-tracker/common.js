@@ -45,8 +45,11 @@ export function linkify(text) {
 }
 
 // Which of your jobs a blog post is about (by company name in its title / opening lines).
+// "Google Form", "Microsoft Teams"… name a tool, not the company (same rule as the server).
+const PRODUCT_NAMES = /https?:\/\/\S+|\b(?:google|microsoft|ms)\s+(?:forms?|sheets?|docs?|drive|meet|calendar|teams|excel)\b/gi;
+
 export function matchJobs(post, jobs) {
-  const head = `${post.title} ${withoutLinks(post.text).slice(0, 300)}`;
+  const head = `${post.title} ${withoutLinks(post.text).slice(0, 300)}`.replace(PRODUCT_NAMES, ' ');
   return jobs.filter(j => companyPatterns(j.company).some(re => re.test(head))).map(j => j.id);
 }
 
@@ -55,6 +58,27 @@ export function relevantPosts(posts, jobs) {
   return posts
     .map(p => ({ ...p, jobIds: matchJobs(p, jobs) }))
     .filter(p => p.jobIds.length || p.mentionsMe);
+}
+
+// PPTs: every company's, since a PPT usually comes before its JAF opens (same rule as the server).
+export const PPT_TITLE = /pre-?placement talk|\bppt\b/i;
+
+// The company named in a post title: "Reminder | Navi Limited | Pre-Placement Talk (PPT)" -> "Navi".
+export function titleCompany(title) {
+  const parts = String(title).split('|').map(x => x.trim()).filter(Boolean);
+  const name = parts.find(x => !/^(?:reminder|urgent|update|important|mandatory)\b|pre-?placement|\bppt\b|\bset\s*\d/i.test(x)) || parts[0] || '';
+  return shortName(name);
+}
+
+// Your posts plus every other company's PPT posts (not hidden ones), newest first; those get p.ppt = company.
+export function postsWithPpts(posts, jobs, allJobs, hiddenShort) {
+  const mine = relevantPosts(posts, jobs);
+  const have = new Set(mine.map(p => p.id));
+  const ppts = posts
+    .filter(p => !have.has(p.id) && PPT_TITLE.test(p.title) && !matchJobs(p, allJobs).length
+      && !hiddenShort.has(titleCompany(p.title)))
+    .map(p => ({ ...p, jobIds: [], ppt: titleCompany(p.title) }));
+  return [...mine, ...ppts].sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
 export function money(value, currency = 'INR') {
@@ -99,11 +123,41 @@ export function formatDuration(raw) {
 export const roundsOf = j => (j.rounds || []).map(r => (typeof r === 'string' ? { name: r, duration: '' } : r));
 
 // The numbered round chips on a JAF card, with durations when the company gave them.
-export function roundsHtml(j) {
+// done: how many of the first rounds are over (greyed out with a tick).
+export function roundsHtml(j, done = 0) {
   const rounds = roundsOf(j);
   if (!rounds.length) return '';
-  return `<div class="rounds">${rounds.map((r, i) => `<span>${i + 1}. ${esc(r.name)}${
+  return `<div class="rounds">${rounds.map((r, i) => `<span${i < done ? ' class="done" title="Over"' : ''}>${i < done ? '✓' : `${i + 1}.`} ${esc(r.name)}${
     r.duration ? ` <b class="dur">· ${esc(r.duration)}</b>` : ''}</span>`).join('')}</div>`;
+}
+
+// What kind of step a round is, from its name ("Technical test", "Pre Placement Talk", "Personal interview"…).
+const roundType = n => /pre[- ]?placement|\bppt\b/i.test(n) ? 'PPT'
+  : /test|assessment|aptitude|coding|exam|online/i.test(n) ? 'Test'
+  : /interview|group discussion|\bgd\b/i.test(n) ? 'Interview'
+  : /resume|\bcv\b|shortlist|filter|screen/i.test(n) ? 'Resume' : null;
+
+// How many of a JAF's first rounds are over, judged from its blog posts: each test, PPT or interview whose time
+// passed (3 h ago) uses up the next round of that kind; a round being over means the ones before it are too.
+// Resume filtering is over once a shortlist came out. postEvents: {post id: event time} from the server.
+export function roundsDone(j, posts, postEvents = {}, now = Date.now()) {
+  const rounds = roundsOf(j);
+  const past = { Test: new Set(), PPT: new Set(), Interview: new Set() };
+  let shortlist = false;
+  for (const p of posts) {
+    const [kind] = postKind(p.title);
+    if (kind === 'Shortlist') shortlist = true;
+    const at = postEvents[p.id];
+    if (at && past[kind] && !/registration|mock/i.test(p.title) && now > new Date(at).getTime() + 3 * 3600000) past[kind].add(at);
+  }
+  const left = Object.fromEntries(Object.entries(past).map(([k, v]) => [k, v.size]));
+  let done = 0;
+  rounds.forEach((r, i) => {
+    const t = roundType(r.name);
+    if (left[t] > 0) { left[t]--; done = i + 1; }
+  });
+  if (!done && shortlist && roundType(rounds[0]?.name || '') === 'Resume') done = 1;
+  return done;
 }
 
 export const shortName = c =>c.replace(/\[.*?\]/g, '').replace(/\b(pvt|private|ltd|limited|llp|inc)\b\.?/gi, '').replace(/\s+/g, ' ').trim();

@@ -32,7 +32,7 @@ Keep the default firewall (only SSH, port 22, is open).
 From your laptop, in the project folder:
 
 ```bash
-scp -r jaf-tracker server/*.py server/web-shim.js server/setup.sh ubuntu@<server-ip>:~/
+scp -r jaf-tracker server/*.py server/web-shim.js server/device-session.js server/sw.js server/setup.sh ubuntu@<server-ip>:~/
 ssh ubuntu@<server-ip> 'bash setup.sh'
 echo 'JAF_SERVER=ubuntu@<server-ip>' > server/local.env   # used by deploy.sh; not in git
 ```
@@ -171,6 +171,17 @@ How the website stays current (`web.py` + `web-shim.js`):
 - **Fast over Tailscale's relays:** gzip, `ETag` / `304` for unchanged files, and the last data kept in the
   browser's `localStorage`, so pages draw at once and refresh in the background.
 - **Installable:** `site.webmanifest` + `icons/icon192.png` / `icon512.png`.
+- **Offline:** `sw.js` (a service worker) keeps the site's files on the device and serves them without
+  touching the network; `web.py` stamps it with a fingerprint of those files, so a deploy installs a whole
+  new copy and open pages reload once. `data.json` and `/api/*` never go through its cache: the last data
+  stays in `localStorage`. Posts read and companies hidden while offline are queued there and sent when the
+  server is reachable again. Service workers need HTTPS, which `tailscale serve` provides.
+
+**Shortlists.** For posts about your companies from the last 10 days whose title says shortlist, waitlist,
+selected, result or offer, the post text and any linked sheet (same downloaders as below) are checked for your
+roll number. Found: the post counts as naming you (🎉 message, Mentions). Not found, but the list has at least 5
+roll numbers and every link was read: you're out, so the company is added to `hidden.json` once per list (unhiding
+sticks) and you get a message. Only that yes/no is kept (`state.json → lists`), never the list.
 
 **Your room from seating sheets.** Posts keep their links as `Click Here (https://…)`. For posts about your
 companies from the last 4 days, links on "seating / seat allotment / venue" lines are downloaded (IITB
@@ -194,10 +205,45 @@ makes the next sync re-read the whole blog once (GET only, no repeat messages).
 When killing a process over SSH, use its PID (`pgrep`, then `kill <pid>`): `pkill -f <pattern>` also
 matches the SSH command itself and ends your session.
 
+## Website password
+
+On the public address, every page, `data.json` and `/api/*` require a password. Only the install manifest and
+icons don't. Without a password file, nobody can log in there. A device stays logged in for up to 400 days, each visit extends that, and failed tries are limited.
+
+Your Tailscale address doesn't ask for it. `web.py` listens on two local ports, `8787` for Tailscale Serve and
+`8788` for Nginx, and the port decides. **Never point Nginx or anything public at `8787`.**
+
+```bash
+~/jaf-sync/wa-venv/bin/python -I ~/jaf-web/web.py set-password   # choose a new one, typed in hidden
+```
+
+Changing it logs out every device. There's no logout button or page, so to remove a single device, clear this site's data in that device's browser.
+
+## Publishing on the internet (optional)
+
+This makes the site reachable from any device at your own domain (`jaf.example.com` below). **It's less private than Tailscale
+alone:** anyone can reach the login page, so only the password protects your data.
+
+First put your settings in `~/jaf-sync/site.json` (not in git): `{"domain": "jaf.example.com", "user": "me"}`
+(`user` is the name passkeys are saved under; an optional `parentOrigin` is a page of yours that keeps the login
+fresh in a hidden frame). `enable-public-site.sh` puts Nginx in front of `web.py`. It blocks `/api/session` publicly, so your portal
+login is still sent over Tailscale only. Then allow TCP 80 and 443 in Oracle's security list, point the DNS
+name at the server, and run `sudo certbot --nginx -d jaf.example.com`.
+
+Tailscale Serve holds port 443 on its own interface, so Nginx can't listen on 443 everywhere. After Certbot runs,
+in `/etc/nginx/sites-available/jaf-tracker` change `listen 443 ssl` to `listen <the server's private IP>:443 ssl`,
+remove the `listen [::]:443` line, then run `sudo nginx -t && sudo systemctl restart nginx`.
+
+To go back to Tailscale only, remove both Oracle rules and run `sudo systemctl disable --now nginx`.
+
 ## Security
 
 - SSH: key only, no passwords, no root login, 3 tries (`/etc/ssh/sshd_config.d/99-jaf-hardening.conf`).
-- Only port 22 is open to the internet; the website listens on `127.0.0.1` and is published only on
-  your tailnet. `POST /api/session` also requires the key from `~/jaf-sync/key`.
+- The website listens only on `127.0.0.1`. It's published on your tailnet, plus the internet through Nginx if you
+  enabled that. `POST /api/session` also requires the key from `~/jaf-sync/key`.
 - `~/jaf-sync/` is `700`; `session.json` (portal login + cookies), `config.json` (tokens, number),
   `key` and `whatsapp.db` are `600`. Security updates install automatically (unattended-upgrades).
+
+## Website login (public address)
+
+The public address requires a passkey. The password only creates a passkey on a new device and gives no login by itself. The login cookie lasts 15 minutes and is renewed silently by a device key that scripts can't read. Passkeys are stored in `~/jaf-sync/web-passkeys.json`; delete that file to remove every passkey and device. The Tailscale address still needs no login.

@@ -93,6 +93,7 @@ button.small { font-size: 12px; padding: 5px 10px; }
 .brand p.status { margin-top: 2px; font-size: 12px; color: var(--good); display: flex; align-items: center; gap: 6px; }
 .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .status.bad { color: var(--danger); font-weight: 600; }
+.brand p.status.off { color: var(--muted); }
 .syncbtn { display: inline-flex; align-items: center; gap: 6px; }
 .syncicon { display: inline-block; font-size: 16px; line-height: 1; }
 .syncbtn:disabled .syncicon { animation: spin 1s linear infinite; }
@@ -194,6 +195,8 @@ button.small { font-size: 12px; padding: 5px 10px; }
 .rounds { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
 .rounds span { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
 .rounds .dur { font-weight: 700; }
+.rounds span.done { background: var(--line); color: var(--muted); }
+.rounds span.done .dur { font-weight: 600; }
 .job .latest { all: unset; cursor: pointer; display: block; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; width: 100%; }
 .job .latest b { color: var(--text); font-weight: 600; }
 
@@ -445,3 +448,25 @@ footer { margin-top: 32px; font-size: 12px; text-align: center; }
 /* Stat tiles: full text on wide screens, short on phones (see the phone block) */
 .stat .short { display: none; }
 @media (max-width: 640px) { .stat .short { display: inline; } }
+
+/* Tab switch: the new tab slides in from the side you swiped (or tapped) toward */
+#views[data-enter="right"] { animation: enter-right .2s ease-out; }
+#views[data-enter="left"] { animation: enter-left .2s ease-out; }
+@keyframes enter-right { from { transform: translateX(28px); opacity: .35; } to { transform: none; opacity: 1; } }
+@keyframes enter-left { from { transform: translateX(-28px); opacity: .35; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #views[data-enter] { animation: none; } }
+
+/* Sideways swipes switch tabs; don't let Chrome turn them into Back/Forward (Android's edge-swipe back still works) */
+html, body { overscroll-behavior-x: none; }
+
+/* Swipe area: the browser handles vertical scrolling and pinch-zoom; sideways drags go to the tab swiper */
+#views { touch-action: pan-y pinch-zoom; }
+
+/* Swipe preview of the neighbouring tab (see dashboard.js) */
+#peek { display: none; position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+#peek .peek-sheet { position: absolute; inset: 0; background: var(--bg); }
+
+/* While a tab slides, nothing may widen the page (that forced a full re-layout every frame) */
+html, body { overflow-x: clip; }
+/* Keep the first child's margin inside #views, so the swipe preview lines up exactly with the page */
+#views { display: flow-root; }

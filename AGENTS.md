@@ -91,9 +91,27 @@ question by text and by voice note.
   views), served by `web.py` with `web-shim.js` standing in for `chrome.*`. Change the pages once, test
   both in the extension and on the site, then `server/deploy.sh`. Keep it one page: separate pages cost a
   full reload per tab through Tailscale's relay. New files must be added to `FILES` in `web.py`.
+- **The site runs from a service worker** (`server/sw.js`, cache-first for the files in `FILES`). `web.py`
+  fingerprints those files, so a deploy updates it by itself; a change to a file outside `FILES` or
+  `web-shim.js` won't trigger an update. Never add `data.json` or `/api/*` to its cache.
 - **Testing the website headless:** the page keeps a push stream (`/api/events`) open, so
   `chrome --headless --virtual-time-budget/--dump-dom` never finishes. Drive Chrome over the DevTools
   protocol instead (`--remote-debugging-port`, `Runtime.evaluate`, `Page.captureScreenshot`).
+- **Shortlists are often only in a linked sheet**, and some posts have bare URLs instead of `label (url)`.
+  `check_lists()` reads both; it hides a company only when a readable list has 5+ roll numbers and not the
+  student's. Print only yes/no or counts when debugging it.
+- **One post, several job codes, different times** ("Job Code 2 … 10 am / Job Code 3 … 11:30 am"):
+  `extract_event()` takes the student's own jobs (`post_jobs()`) and uses the lines under their job code or
+  title (`my_part()`). Seating sheets come as PDF, xlsx or CSV; a sheet that fails is retried every sync.
+- **Company names hide in tool names and links**: "Google Form", "Google Meet", `meet.google.com` made posts count
+  as Google's. `match_jobs()` / `matchJobs()` drop bare links and `PRODUCT_NAMES` first; keep both in step.
+- **Action items** (`action_of()`): a sentence with an action verb + form/registration/portal, worded as required
+  (must, mandatory, please, before, by 11:45…), and not conditional ("if you haven't received…"). Deadline comes
+  from the same sentence, else a "Deadline:" line.
+- **PPTs come before the JAF opens**, so `ppt_posts()` follows every company's PPT (events, messages,
+  reminders), not only signed ones; `title_company()` reads the company from the title. `hide` accepts these too.
+- **The optional public site's settings** (domain, passkey user name) live in `~/jaf-sync/site.json` on the
+  server, never in git; the repo has only `jaf.example.com`.
 - **Seating sheets name other students.** Read them only on the server, keep only the student's own row,
   never print or save the rest. Most are PDFs on `bighome.iitb.ac.in` (needs `pdftotext`).
 - **Post text keeps links as `label (url)`.** Anything parsing post text for dates/venues must use

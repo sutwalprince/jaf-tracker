@@ -7,17 +7,22 @@ The server does all the messaging (WhatsApp, Telegram, reminders); see the [main
 
 - One page (`dashboard.html`, click the extension icon) with three tabs:
   - **My JAFs** (`#jafs`): the JAFs you've signed, with CTC for your program, location, CPI cutoff,
-    deadlines, selection rounds with durations and the next test/PPT. Hide companies you're done with.
+    deadlines, selection rounds with durations (rounds that are over turn grey with a ✓) and the next
+    test/PPT. Hide companies you're done with; *Show hidden* lists only the hidden ones.
   - **Updates** (`#updates`, default): every placement-blog post about those companies, grouped by day
-    and labelled by type; upcoming tests and PPTs; a filter for unread posts.
+    and labelled by type (posts asking you to fill a form or register are labelled *Action*); every
+    company's PPTs with a **🎤 PPTs** filter; upcoming tests and PPTs; a filter for unread posts.
   - **Open JAFs** (`#open`): every JAF open right now, with the portal's own eligibility flags, bonus
     allowed or not, CTC, countdown, requirements and job description, and a link to the portal's Jobs page.
+  On phones, swipe left/right to change tabs.
   `jafs.html` only redirects to `dashboard.html#open`; its code (`jafs.js`) is a module the dashboard imports.
 - The logo's source is `icons/logo.svg`; the PNGs (16–512 px) are rendered from it. `site.webmanifest`
   makes the website installable as an app.
+- Finished rounds and tests turn grey (✓), from the times in the blog posts, here and on the website.
 - Post text keeps where links point, so links in blog posts open from the dashboard.
-- Your room from seating sheets, **✓ Done** on finished tests and live push come from the server, so they
-  show on the website; the extension's own dashboard reads the blog itself and doesn't have them.
+- Your room from seating sheets, *Action* labels and live
+  push come from the server, so they show on the website (which also works offline once opened); the
+  extension's own dashboard reads the blog itself and doesn't have them.
 - **Send login to server**: whenever your login changes, sends your portal token and your cookies for
   `campus.placements.iitb.ac.in` and `sso.iitb.ac.in` (nothing else, never your password) to your
   server over Tailscale, protected by a secret key.

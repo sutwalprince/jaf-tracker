@@ -193,9 +193,12 @@ async function doSync() {
   }
 
   const allPosts = [...known.values()].sort((a, b) => new Date(b.date) - new Date(a.date));
-  const events = extractEvents(relevantPosts(allPosts, Object.values(jobs)), jobs);
+  const mine = relevantPosts(allPosts, Object.values(jobs));
+  const events = extractEvents(mine, jobs);
+  // When each post's test/PPT/interview is: the dashboard greys out finished rounds and tests with it (as the website does).
+  const postEvents = Object.fromEntries(mine.map(p => [p.id, extractEvent(p, companyOf(p, jobs))?.at]).filter(([, at]) => at));
   await chrome.storage.local.set({
-    me, jobs, posts: allPosts, events, openJobs, jobDetails, lastSync: new Date().toISOString(), auth: { ok: true },
+    me, jobs, posts: allPosts, events, postEvents, openJobs, jobDetails, lastSync: new Date().toISOString(), auth: { ok: true },
     ...(blog ? { postFormat: POST_FORMAT } : {}),
     blogFailingSince, blogWarned: blogWarn, blogError: blog ? null : result.error, ssoAlerted: !!result.ssoLoggedOut,
     error: blogWarn ? "Couldn't read the placement blog for over an hour (still retrying). JAFs and reminders are up to date." : null,

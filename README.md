@@ -34,7 +34,10 @@ applies, uploads or changes anything.
 | When | What |
 |---|---|
 | As it happens | New blog posts about your companies (links in them included and tappable), posts naming your roll number (shortlists), new JAFs you're eligible for |
-| Seating sheet posted | 💺 Your room for the test, read from the seating sheet (bighome PDF or Google Sheet) by your roll number; again if it changes. Reminders and the 8 am / 8 pm messages include it |
+| A post asks you to do something | 🚨 *ACTION NEEDED* first, as its own message: fill a form, register on the company portal, choose a track, with the deadline and time left (sent even in quiet hours when due within 12 h). Reminders 24 h, 12 h, 4 h and 1 h before. "Fill this form if you have a problem" posts and other job codes are skipped. The website labels these posts *Action* |
+| A PPT is announced | 🎤 For **every** company, not only ones you've signed (PPTs usually come before the JAF opens), with reminders 24 h, 12 h and 4 h before. `hide <company>` stops one |
+| Shortlist posted | 🎉 when your roll number is on it, even when the list is only in a linked PDF or Google Sheet. 🙁 When a list has roll numbers but not yours, the company is hidden automatically (reply `unhide <company>` to undo) |
+| Seating sheet posted | 💺 Your room for the test, read from the seating sheet (bighome PDF, CSV or Google Sheet; the room is also in the post's own message) by your roll number; again if it changes. Reminders and the 8 am / 8 pm messages include it |
 | 24 h, 12 h, 4 h before | Tests, PPTs, registration deadlines, JAFs you can sign but haven't, your portal login expiring (a company's new post about a test starts its reminders again) |
 | 8 am | Today's plan: tests/PPTs with times and venues, JAFs closing today |
 | 8 pm | Today's remaining deadlines, plus anything due early tomorrow |
@@ -65,10 +68,10 @@ search and filters pinned while you scroll, one compact row of stats, and it can
 app** (Chrome **⋮ → Add to Home screen**: full screen, no browser bar). Three tabs that switch instantly:
 - *My JAFs* (`…/#jafs`): your signed JAFs with CTC, rounds and durations, and the next test or PPT (with
   your room, when known) on each card. Companies with something coming up are listed first.
-  Hide/Unhide companies you're done with.
+  Rounds that are over are greyed out with a ✓ (worked out from past tests, PPTs, interviews and shortlists). Hide/Unhide companies you're done with; **Show hidden** lists only the hidden ones.
 - *Updates* (`…/#updates`, the default): blog posts about your companies, grouped by day and labelled
   (Test, PPT, Interview, Deadline, JAF open, Shortlist); tests and PPTs that are over show **✓ Done**;
-  links in posts open; seating posts show your room (💺 LH 101). Upcoming events, and **Show unread
+  links in posts open; seating posts show your room (💺 LH 101); every company's PPTs are listed too, with a **🎤 PPTs** filter. Upcoming events, and **Show unread
   updates (N)**. The tab shows a red count of unread posts.
 - *Open JAFs* (`…/#open`): eligibility, bonus, CTC for your program, countdowns, link to sign on the portal.
   The tab shows a green count of JAFs you can still sign (eligible or bonus); the stats show how many
@@ -78,6 +81,10 @@ app** (Chrome **⋮ → Add to Home screen**: full screen, no browser bar). Thre
 refresh), and opening the site starts a sync if the last one is over 5 minutes old. **Sync now** (top
 right) syncs straight away (read-only, at most once a minute). Read/unread and hidden companies are
 shared across all your devices, live as well.
+
+**Offline:** once you've opened the site on a device, it opens instantly there with your last data, even
+with no network or Tailscale off. The header shows *Offline · synced 2 h ago*. Posts you read and companies
+you hide meanwhile are sent to the server when you reconnect.
 
 ## Day to day
 
@@ -105,7 +112,7 @@ Point it at [`AGENTS.md`](AGENTS.md): the step-by-step guide, rules and known pi
 | `server/jaf_whatsapp.py` | The always-on WhatsApp service: sends the queue, answers commands and questions, links the spare number |
 | `server/jaf_ai.py` | The AI (Gemini or Claude): JAF summaries and answers, with the monthly budget |
 | `server/jaf_transcribe.py` | Voice-note transcription on the server (faster-whisper) |
-| `server/web.py`, `server/web-shim.js` | The private website, and the shim that lets the extension's pages run as a site |
+| `server/web.py`, `server/web-shim.js`, `server/sw.js` | The private website, the shim that lets the extension's pages run as a site, and the service worker that makes it work offline |
 | `server/setup.sh` | One-time setup of a fresh server |
 | `server/deploy.sh` | Copies your changes to the server and restarts what's affected |
 

@@ -3,7 +3,7 @@
 # Installs: the sync job (every 15–30 min), the private website, and the always-on WhatsApp service.
 #
 # Run from your laptop, in this project folder:
-#   scp -r jaf-tracker server/*.py server/web-shim.js server/setup.sh ubuntu@<server-ip>:~/
+#   scp -r jaf-tracker server/*.py server/web-shim.js server/device-session.js server/sw.js server/setup.sh ubuntu@<server-ip>:~/
 #   ssh ubuntu@<server-ip> 'bash setup.sh'
 # Then follow the "After setup" steps in server/README.md (Tailscale, login, Telegram/WhatsApp).
 set -euo pipefail
@@ -12,21 +12,21 @@ SYNC="$HOME/jaf-sync"
 WEB="$HOME/jaf-web"
 UNITS="$HOME/.config/systemd/user"
 
-for f in jaf_sync.py jaf_whatsapp.py jaf_ai.py jaf_transcribe.py web.py web-shim.js; do
+for f in jaf_sync.py jaf_whatsapp.py jaf_ai.py jaf_transcribe.py web.py web-shim.js device-session.js sw.js; do
   [ -f "$HOME/$f" ] || { echo "Missing ~/$f. Copy the project files first (see the top of this script)."; exit 1; }
 done
 [ -f "$HOME/jaf-tracker/dashboard.html" ] || { echo "Missing ~/jaf-tracker (the website reuses its pages)."; exit 1; }
 
 echo "==> Packages"
 sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv poppler-utils >/dev/null  # poppler-utils: pdftotext, for seating-sheet PDFs
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv python3-cryptography poppler-utils >/dev/null  # poppler-utils: pdftotext, for seating-sheet PDFs
 sudo timedatectl set-timezone Asia/Kolkata
 
 echo "==> Files (private to your user)"
 mkdir -p "$SYNC" "$WEB" "$UNITS"
 chmod 700 "$SYNC"
 mv "$HOME/jaf_sync.py" "$HOME/jaf_whatsapp.py" "$HOME/jaf_ai.py" "$HOME/jaf_transcribe.py" "$SYNC/"
-mv "$HOME/web.py" "$HOME/web-shim.js" "$WEB/"
+mv "$HOME/web.py" "$HOME/web-shim.js" "$HOME/device-session.js" "$HOME/sw.js" "$WEB/"
 # The secret key the laptop extension uses to send your login (copy it to the laptop afterwards).
 [ -f "$SYNC/key" ] || (umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$SYNC/key")
 # Settings: alert channels stay off until you set them up (see server/README.md → Settings).

@@ -55,6 +55,7 @@
     </div>
   </details>
 
+  <div id="views">
   <section id="stats" class="stats"></section>
   <section id="upcoming" class="upcoming" hidden></section>
 
@@ -80,11 +81,12 @@
       <div id="feed" class="feed"></div>
     </section>
     <section id="jobsSection">
-      <h2>My signed JAFs <button id="toggleHidden" class="linkbtn" hidden></button></h2>
+      <h2><span id="jobsTitle">My signed JAFs</span> <button id="toggleHidden" class="linkbtn" hidden></button></h2>
       <div id="jobs" class="jobs"></div>
     </section>
   </main>
   <div id="openList" class="jaflist"></div>
+  </div>
 
   <footer class="muted">Read-only: this extension only reads the portal and the placement blog. It never signs, unsigns or changes anything.</footer>
   <script type="module" src="dashboard.js"></script>

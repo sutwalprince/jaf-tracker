@@ -35,6 +35,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import csv
+import io
 from xml.etree import ElementTree
 from base64 import urlsafe_b64decode
 from datetime import datetime, timedelta, timezone
@@ -60,7 +62,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 MAX_PAGES = 40
 TEXT_LIMIT = 8000
-POST_FORMAT = 2  # 2: post text keeps links as "label (url)"; a change re-reads the whole blog once
+POST_FORMAT = 3  # 2: links kept as "label (url)"; 3: broken links (not web addresses) dropped. A change re-reads the blog once
 DETAIL_TTL = 3600            # seconds before re-reading a JAF's details
 BLOG_WARN = 3600             # seconds the blog must keep failing before telling you
 REMIND_HOURS = (4, 12, 24)
@@ -206,8 +208,12 @@ def company_patterns(name):
     return _patterns[name]
 
 
+# "Google Form", "Microsoft Teams"… name a tool, not the company: they mustn't make a post count as Google's.
+PRODUCT_NAMES = re.compile(r"https?://\S+|\b(?:google|microsoft|ms)\s+(?:forms?|sheets?|docs?|drive|meet|calendar|teams|excel)\b", re.I)
+
+
 def match_jobs(post, jobs):
-    head = f"{post['title']} {without_links(post['text'])[:300]}"
+    head = PRODUCT_NAMES.sub(" ", f"{post['title']} {without_links(post['text'])[:300]}")
     return [j["id"] for j in jobs if any(p.search(head) for p in company_patterns(j["company"]))]
 
 
@@ -235,9 +241,29 @@ def visible_events(events):
     return [e for e in events if e["company"] not in hidden]
 
 
+def title_company(title):
+    """The company named in a post title: "Reminder | Navi Limited | Pre-Placement Talk (PPT)" -> "Navi"."""
+    parts = [x.strip() for x in title.split("|") if x.strip()]
+    for x in parts:
+        if not re.search(r"^(?:reminder|urgent|update|important|mandatory)\b|pre-?placement|\bppt\b|\bset\s*\d", x, re.I):
+            return short_name(x)
+    return short_name(parts[0]) if parts else "Unknown"
+
+
 def company_of(post, jobs):
     j = jobs.get(str(post["jobIds"][0])) if post.get("jobIds") else None
-    return short_name(j["company"]) if j else post["title"].split("|")[0].strip()
+    return short_name(j["company"]) if j else title_company(post["title"])
+
+
+PPT_TITLE = re.compile(r"pre-?placement talk|\bppt\b", re.I)
+
+
+def ppt_posts(posts, jobs):
+    """PPT posts of every other company: PPTs usually come before the JAF opens, so you're reminded of all of
+    them (`hide <company>` stops one). Posts about your signed companies are already covered by relevant_posts."""
+    hidden = {short_name(c).lower() for c in hidden_companies()}
+    return [{**p, "jobIds": []} for p in posts
+            if PPT_TITLE.search(p["title"]) and not match_jobs(p, jobs) and title_company(p["title"]).lower() not in hidden]
 
 
 # ---------- blog parsing ----------
@@ -254,8 +280,9 @@ def _link(m):
     href = html.unescape(m.group(2)).strip()
     label = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", m.group(3)))).strip()
     url = urllib.parse.urljoin(BLOG_URL, href)
-    if not url.startswith(("http://", "https://")) or href.startswith("#"):
-        return m.group(3)
+    host = urllib.parse.urlparse(url).hostname or ""
+    if not url.startswith(("http://", "https://")) or href.startswith("#") or not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", host):
+        return label  # not a real web address (e.g. a file on the poster's laptop): keep only its text
     url = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
     return url if not label or label == href or label == url else f"{label} ({url})"
 
@@ -337,27 +364,51 @@ def find_time(s):
     return int(m.group(1)) % 12 + (12 if m.group(3).lower() == "p" else 0), int(m.group(2) or 0)
 
 
-def extract_event(post, company):
+JOB_CODE = re.compile(r"\s*job\s*code\s*(\d+)", re.I)
+
+
+def my_part(text, mine):
+    """The lines about your own job, when a post lists several job codes with their own times/venues
+    ("Job Code 2: Hardware … Timing 10 am / Job Code 3: System Software … Timing 11:30 am"); "" otherwise."""
+    lines = text.split("\n")
+    starts = [i for i, line in enumerate(lines) if JOB_CODE.match(line)]
+    if len(starts) < 2 or not mine:
+        return ""
+    codes = {str(j.get("code")) for j in mine}
+    titles = [j["title"].lower() for j in mine if j.get("title")]
+    for a, b in zip(starts, starts[1:] + [len(lines)]):
+        if JOB_CODE.match(lines[a]).group(1) in codes or any(t in lines[a].lower() for t in titles):
+            return "\n".join(lines[a:b])
+    return ""
+
+
+def post_jobs(p, jobs):
+    """Your signed JAFs a post is about."""
+    return [jobs[str(i)] for i in p.get("jobIds") or [] if str(i) in jobs]
+
+
+def extract_event(post, company, mine=()):
     kind = next((k for k in KINDS if k[0].search(post["title"])), None)
     if not kind:
         return None
 
     text = without_links(post["text"])
+    part = my_part(text, mine)  # your job's own lines win over the rest of the post
 
-    def seg(label):
-        m = re.search(rf"\b{label}\s*[:\-–]\s*([^\n]{{0,90}})", text, re.I)
+    def seg(label, src=None):
+        m = re.search(rf"\b{label}\s*[:\-–]\s*([^\n]{{0,90}})", text if src is None else src, re.I)
         return m.group(1) if m else ""
 
     year = (parse_iso(post.get("date") or "") or now()).year
-    date = find_date(seg("date") or seg("deadline"), year) or find_date(text, year)
-    time = find_time(seg("updated time") or seg("time") or seg("deadline")) or find_time(text)
+    date = find_date(seg("date", part) or seg("date") or seg("deadline"), year) or find_date(text, year)
+    time = (find_time(part) if part else None) or find_time(seg("updated time") or seg("time") or seg("deadline")) or find_time(text)
     if not date or not time:
         return None
     try:
         at = datetime(date[2], date[1] + 1, date[0], time[0], time[1], tzinfo=IST)
     except ValueError:
         return None
-    venue = re.sub(r"\s+", " ", seg("venue")).strip()[:60]
+    venue = re.sub(r"\s+", " ", seg("venue", part) or seg("venue")).strip()[:60]
     return {"id": post["id"], "company": company, "kind": kind[1], "icon": kind[2], "at": iso(at),
             "venue": venue, "title": post["title"], "link": post["link"]}
 
@@ -372,10 +423,81 @@ def post_event_times(posts, jobs):
     """{post id: when its test/PPT/interview is}, so the website can grey out ones that are over."""
     out = {}
     for p in posts:
-        e = extract_event(p, company_of(p, jobs))
+        e = extract_event(p, company_of(p, jobs), post_jobs(p, jobs))
         if e:
             out[p["id"]] = e["at"]
     return out
+
+
+# ---------- action items: forms / registrations you must do, and by when ----------
+
+ACTION = re.compile(r"\b(fill(?:ing)?|submit|complete|register|upload|confirm|select|choose|apply)\b[^.\n]{0,100}?"
+                    r"\b(form|registration|preference|track|response|details|portal|link|survey|consent)\b"
+                    r"|\bgoogle form\b|\bmandatory (?:form|registration)\b", re.I)
+MUST = re.compile(r"\bmust\b|mandator|required|need to|needs to|supposed to|\bplease\b|\bkindly\b"
+                  r"|only (?:students|candidates) who|will not be (?:considered|permitted|allowed)|\bbefore\b|\bby\s+\d"
+                  r"|for receiving|to (?:receive|get) the|in order to", re.I)
+# "fill this form if you haven't received the link" is only for people with a problem
+ONLY_IF = re.compile(r"\bif\b|in case|who(?:so)?ever|ha(?:ve|s)n'?t received|not received|facing|issues?\b|quer(?:y|ies)", re.I)
+ACTION_TITLE = re.compile(r"mandatory|urgent|form|registration", re.I)
+ACTION_HOURS = (24, 12, 4, 1)  # reminders before a form / registration deadline
+
+
+def action_deadline(post, hits, text):
+    """When the task is due: a date/time in the task's own sentences, else in a "Deadline:" line."""
+    posted = (parse_iso(post.get("date") or "") or now()).astimezone(IST)
+    m = re.search(r"\bdeadline\s*[:\-–]\s*([^\n]{0,90})", text, re.I)
+    for src in hits + ([m.group(1)] if m else []):
+        t, d = find_time(src), find_date(src, posted.year)
+        day = (d[0], d[1] + 1, d[2]) if d else None
+        if not day:
+            rel = posted + timedelta(days=1) if re.search(r"\btomorrow\b", src, re.I) else posted
+            if not t and not re.search(r"\btoday\b|\btonight\b|\btomorrow\b", src, re.I):
+                continue
+            day = (rel.day, rel.month, rel.year)
+        try:
+            return iso(datetime(day[2], day[1], day[0], *(t or (23, 59)), tzinfo=IST))
+        except ValueError:
+            continue
+    return None
+
+
+def action_of(post, mine=()):
+    """{"what": the sentence, "at": deadline or None} when a post asks you to do something: fill a form, register
+    on a company portal, choose a track… Skips forms only for people with a problem, and other job codes."""
+    text = without_links(post["text"])
+    codes = {str(j.get("code")) for j in mine}
+    hits = []
+    for line in re.split(r"(?<=[.!])\s+|\n", text):
+        line = line.strip(" -–•*\t")
+        if not ACTION.search(line) or ONLY_IF.search(line):
+            continue
+        if not (MUST.search(line) or ACTION_TITLE.search(post["title"])):
+            continue
+        named = set(re.findall(r"job\s*code\s*(\d+)", line, re.I))
+        if named and codes and not named & codes:
+            continue
+        hits.append(line)
+    if not hits:
+        return None
+    return {"what": hits[0][:200], "at": action_deadline(post, hits, text)}
+
+
+def action_events(posts, jobs):
+    """Form / registration deadlines still ahead, as events (reminders, 8 am / 8 pm, website)."""
+    out = {}
+    for p in posts:  # newest first: one per company
+        company = company_of(p, jobs)
+        a = action_of(p, post_jobs(p, jobs))
+        if a and a["at"] and parse_iso(a["at"]) > now() - timedelta(hours=1) and company not in out:
+            out[company] = {"id": p["id"], "company": company, "kind": "Form / registration due", "icon": "🚨",
+                            "at": a["at"], "venue": "", "title": p["title"], "link": p["link"], "what": a["what"]}
+    return list(out.values())
+
+
+def action_line(p, a, company):
+    due = (f"⏳ Due *{when(a['at'])}* ({until(a['at'])})" if a["at"] else "⏳ No deadline given: do it soon")
+    return f"🚨 *ACTION NEEDED · {company}*\n{a['what']}\n{due}"
 
 
 # ---------- your room, from seating sheets linked in posts ----------
@@ -429,6 +551,15 @@ def xlsx_rows(data):
         return out
 
 
+def csv_rows(data):
+    """[(header cells, row cells)] from a CSV file (header: the first row naming "roll", else the first row)."""
+    text = data.decode("utf-8-sig", "replace")
+    rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(text), csv.Sniffer().sniff(text[:2048], ",;\t"))]
+    rows = [r for r in rows if any(r)]
+    head = next((i for i, r in enumerate(rows[:10]) if any(re.search(r"\broll\b", c, re.I) for c in r)), 0)
+    return [(rows[head], r) for r in rows[head + 1:]] if rows else []
+
+
 def pdf_rows(data):
     """[(header cells, row cells)] from a PDF table, via pdftotext -layout (columns = runs of 2+ spaces)."""
     with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
@@ -458,7 +589,7 @@ def my_seat(rows, roll, name):
         for i, c in enumerate(cells):
             label = header[i] if header and len(header) == len(cells) else ""
             rest = roll_re.sub("", c).strip(" -:|")
-            if not rest or re.search(r"name|roll|^s\.?\s?no|serial|^sr|^sl|email|branch|dept|program", label, re.I):
+            if not rest or re.search(r"name|roll|^s\.?\s?no|serial|^sr|^sl|email|branch|dept|depart|program|discipline|course|gender|batch|year|mobile|phone|contact", label, re.I):
                 continue
             if (i == 0 and rest.isdigit()) or not re.search(r"\d", rest) and (not label or all(w.lower().strip(".,") in name_words for w in rest.split())):
                 continue  # serial number, or a name
@@ -471,8 +602,8 @@ def my_seat(rows, roll, name):
     return None
 
 
-def fetch_seat(url, me):
-    """Downloads a seating sheet (read-only GET), finds your row and returns (seat or None); the file isn't kept."""
+def fetch_rows(url):
+    """Downloads a linked sheet (read-only GET) and returns its rows; the file isn't kept."""
     dl = sheet_download_url(url)
     if not dl:
         raise ValueError("unsupported link")
@@ -483,14 +614,22 @@ def fetch_seat(url, me):
         rows = pdf_rows(data)
     elif data[:2] == b"PK":
         rows = xlsx_rows(data)
+    elif b"\0" not in data[:4096] and re.search(rb"[,;\t]", data[:4096]):
+        rows = csv_rows(data)
     else:
-        raise ValueError("not a PDF or spreadsheet")
-    return my_seat(rows, me["roll"], me.get("name", ""))
+        raise ValueError("not a PDF, spreadsheet or CSV")
+    return rows
 
 
-def update_seats(state, jobs, job_list, notify=True):
+def fetch_seat(url, me):
+    """Your room from a seating sheet (None if you're not in it); only your own row is looked at."""
+    return my_seat(fetch_rows(url), me["roll"], me.get("name", ""))
+
+
+def update_seats(state, jobs, job_list, notify=True, fresh_ids=()):
     """Finds your room in seating sheets linked from recent posts about your companies; WhatsApp when it's found or
-    changes; puts it on the matching test (reminders, website). Only your own row is kept."""
+    changes; puts it on the matching test (reminders, website). Only your own row is kept.
+    For a post that's new in this sync, the room goes in that post's own message instead (fresh_ids)."""
     me = state.get("me") or {}
     if not me.get("roll"):
         return
@@ -507,7 +646,7 @@ def update_seats(state, jobs, job_list, notify=True):
         ahead = [e for e in events if e["company"] == company and parse_iso(e["at"]) > now() - timedelta(hours=1)]
         for url in seat_links(p):
             old = seats.get(url)
-            if old and (not ahead or now().timestamp() - old.get("checkedAt", 0) < SEAT_RECHECK):
+            if old and "error" not in old and (not ahead or now().timestamp() - old.get("checkedAt", 0) < SEAT_RECHECK):
                 continue
             rec = {"postId": p["id"], "company": company, "postDate": p["date"], "checkedAt": now().timestamp()}
             try:
@@ -515,10 +654,12 @@ def update_seats(state, jobs, job_list, notify=True):
                 rec["found"] = rec["seat"] is not None
             except Exception as e:  # noqa: BLE001 - a bad link shouldn't stop the sync
                 seats[url] = {**(old or {}), **rec, "error": str(e)[:120]}
+                if notify and old is None and (ahead or posted > now() - timedelta(hours=24)):
+                    msgs.append(f"💺 *{company}*: I couldn't read the seating sheet, so check your room yourself:\n{url}")
                 continue
             changed = old is None or "found" not in old or old.get("seat") != rec["seat"]
             fresh_post = posted > now() - timedelta(hours=24)
-            if notify and changed and (ahead or fresh_post):
+            if notify and changed and (ahead or fresh_post) and p["id"] not in fresh_ids:
                 ev = ahead[0] if ahead else None
                 when_line = f"\n{ev['icon']} {ev['kind']} {when(ev['at'])} ({until(ev['at'])})" if ev else ""
                 if rec["found"]:
@@ -543,27 +684,101 @@ def update_seats(state, jobs, job_list, notify=True):
         send_digest("\n\n".join(msgs), msgs, state=state)
 
 
+# ---------- shortlists: are you still in? ----------
+
+LIST_TITLE = re.compile(r"short-?list|wait-?list|selected|selection list|final (?:list|selection)|result|offer", re.I)
+ROLL_LIKE = re.compile(r"(?<![A-Za-z0-9])\d{2}[A-Za-z]\d{4}(?![A-Za-z0-9])|(?<!\d)\d{9}(?!\d)")
+LIST_DAYS = 10         # lists in posts from the last 10 days are read
+LIST_MIN = 5           # a list needs this many roll numbers before "you're not on it" counts
+LIST_NOTIFY_DAYS = 3   # older lists change things quietly
+LIST_TRIES = 3
+
+
+def check_lists(state, posts, jobs, fresh_ids=(), notify=True):
+    """Reads shortlists / results about your companies: the post text and any linked sheet (bighome PDF, Google
+    Sheet). Your roll number there: the post counts as naming you (🎉, Mentions). Roll numbers but not yours:
+    you're out, so the company is hidden (once per list; `unhide` undoes it) and you're told.
+    Only that yes/no is kept, never the list."""
+    roll = (state.get("me") or {}).get("roll")
+    if not roll:
+        return
+    mine = re.compile(rf"(?<![A-Za-z0-9]){re.escape(roll)}(?![A-Za-z0-9])", re.I)
+    lists = {k: v for k, v in (state.get("lists") or {}).items()
+             if now().timestamp() - v.get("checkedAt", 0) < 30 * 86400}
+    cutoff = now() - timedelta(days=LIST_DAYS)
+    msgs, hide = [], set()
+    for p in relevant_posts(posts, active_jobs(jobs)):
+        posted = parse_iso(p.get("date") or "")
+        if not p["jobIds"] or not LIST_TITLE.search(p["title"]) or not posted or posted < cutoff:
+            continue
+        old = lists.get(p["id"]) or {}
+        if "inList" in old or old.get("tries", 0) >= LIST_TRIES:
+            continue
+        texts, failed = [without_links(p["text"])], False
+        for url in dict.fromkeys(u.rstrip(".,;:") for u in re.findall(r"https?://[^\s()<>]+", p["text"])):
+            if sheet_download_url(url):  # "label (url)" links and bare ones
+                try:
+                    texts += [c for _, cells in fetch_rows(url) for c in cells]
+                except Exception:  # noqa: BLE001 - try again next sync
+                    failed = True
+        names = sorted({jobs[str(i)]["company"] for i in p["jobIds"] if str(i) in jobs})
+        rec = {"postId": p["id"], "companies": names, "checkedAt": now().timestamp(), "tries": old.get("tries", 0) + 1}
+        if p.get("mentionsMe") or any(mine.search(t) for t in texts):
+            rec["inList"] = True
+        elif not failed and sum(len(ROLL_LIKE.findall(t)) for t in texts) >= LIST_MIN:
+            rec["inList"] = False
+        lists[p["id"]] = rec
+        recent = notify and posted > now() - timedelta(days=LIST_NOTIFY_DAYS)
+        short = " / ".join(short_name(n) for n in names)
+        what = "|".join(p["title"].split("|")[1:]).strip() or p["title"]  # "Test Shortlist"
+        if rec.get("inList") is True and not p.get("mentionsMe") and recent and p["id"] not in fresh_ids:
+            msgs.append(f"🎉 You're on the *{short}* {what}!\n{p['link']}")
+        elif rec.get("inList") is False:
+            hide.update(names)
+            rec["hid"] = names
+            if recent:
+                msgs.append(f"🙁 You're not on the *{short}* {what}, so I've hidden {short}: no more updates or "
+                            f"reminders for it. Wrong? Reply `unhide {short_name(names[0]).split()[0].lower()}`.\n{p['link']}")
+    state["lists"] = lists
+    # A list naming you (even only in its linked sheet) counts as a post naming you.
+    yes = {k for k, v in lists.items() if v.get("inList")}
+    for p in posts:
+        if p["id"] in yes:
+            p["mentionsMe"] = True
+    if hide:
+        save(HIDDEN, sorted(hidden_companies() | hide), private=True)
+    if msgs:
+        send_digest("\n\n".join(msgs), msgs, state=state)
+
+
 def extract_events(posts, jobs):
     seen = {}
     for p in posts:  # newest first: an "update" post replaces the earlier announcement
-        e = extract_event(p, company_of(p, jobs))
+        e = extract_event(p, company_of(p, jobs), post_jobs(p, jobs))
         if e and (e["company"], e["kind"]) not in seen:
             seen[(e["company"], e["kind"])] = e
-    return sorted(seen.values(), key=lambda e: e["at"])
+    return sorted([*seen.values(), *action_events(posts, jobs)], key=lambda e: e["at"])
 
 
-def describe_post(p, jobs):
-    """One short line built from the title and event time."""
+def describe_post(p, jobs, seat=None):
+    """One short line built from the title and event time (and your room, when the seating sheet is known)."""
     company = company_of(p, jobs)
+    room = f" · 💺 Your room: *{seat}*" if seat else ""
     if p.get("mentionsMe"):
         if re.search(r"shortlist", p["title"], re.I):
             return f"🎉 You're on the *{company}* shortlist! ({p['title']})"
         return f"🎉 Your name is in: *{p['title']}*"
-    e = extract_event(p, company)
+    e = extract_event(p, company, post_jobs(p, jobs))
     if e and parse_iso(e["at"]) > now():
-        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + where(e)
+        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + where({**e, "seat": seat})
     rest = "|".join(p["title"].split("|")[1:]).strip()
-    return f"📢 *{company}*: {rest or p['title']}"
+    return f"📢 *{company}*: {rest or p['title']}" + room
+
+
+def post_seat(state, p):
+    """Your room for a post: from its own seating sheet, or the sheet already matched to its test."""
+    return (state.get("postSeats") or {}).get(p["id"]) or next(
+        (e["seat"] for e in state.get("events") or [] if e["id"] == p["id"] and e.get("seat")), None)
 
 
 def full_post(p, line):
@@ -880,7 +1095,12 @@ def sync():
                     "it keeps retrying.", state=state)
 
     all_posts = sorted(known.values(), key=lambda p: p.get("date") or "", reverse=True)
-    events = extract_events(relevant_posts(all_posts, list(jobs.values())), jobs)
+    try:
+        check_lists(state, all_posts, jobs, {p["id"] for p in fresh}, notify=not first_run)
+    except Exception as e:  # noqa: BLE001 - a bonus; never break the sync
+        print(f"lists: {e}", file=sys.stderr)
+    events = extract_events(sorted(relevant_posts(all_posts, list(jobs.values())) + ppt_posts(all_posts, list(jobs.values())),
+                                   key=lambda p: p.get("date") or "", reverse=True), jobs)
     job_list = active_jobs(jobs)  # messages skip hidden companies (posts naming you still come through)
     seen_open = set(state.get("seenOpenIds") or [])
     had_seen = "seenOpenIds" in state
@@ -891,16 +1111,35 @@ def sync():
         "error": "Couldn't read the placement blog for over an hour (still retrying). JAFs and reminders are up to date."
                  if blog_warn else None,
         "seenOpenIds": sorted(seen_open | {j["id"] for j in open_jobs}),
-        "postEvents": post_event_times(relevant_posts(all_posts, list(jobs.values())), jobs),
+        "postEvents": post_event_times(relevant_posts(all_posts, list(jobs.values())) + ppt_posts(all_posts, list(jobs.values())), jobs),
+        # Posts asking you to do something (website: red "Action" label): {post id: deadline or ""}
+        "postActions": {p["id"]: (a["at"] or "") for p in relevant_posts(all_posts, list(jobs.values()))[:150]
+                        if (a := action_of(p, post_jobs(p, jobs)))},
     })
     try:
-        update_seats(state, jobs, job_list, notify=not first_run)
+        update_seats(state, jobs, job_list, notify=not first_run, fresh_ids={p["id"] for p in fresh})
     except Exception as e:  # noqa: BLE001 - seats are a bonus; never break the sync
         print(f"seats: {e}", file=sys.stderr)
 
     # Messages about what's new
-    new_posts = sorted(relevant_posts(fresh, job_list), key=lambda p: not p.get("mentionsMe"))
-    lines = [describe_post(p, jobs) for p in new_posts]
+    new_posts = sorted(relevant_posts(fresh, job_list) + ppt_posts(fresh, list(jobs.values())), key=lambda p: not p.get("mentionsMe"))
+    # Things you must do (fill a form, register…) go first, on their own, even in quiet hours when due within 12 h.
+    acts = {p["id"]: action_of(p, post_jobs(p, jobs)) for p in new_posts}
+    act_posts = [p for p in new_posts if acts[p["id"]] and (not acts[p["id"]]["at"] or parse_iso(acts[p["id"]]["at"]) > now())]
+    if not first_run and act_posts:
+        act_lines = [action_line(p, acts[p["id"]], company_of(p, jobs)) for p in act_posts]
+        soon = any(acts[p["id"]]["at"] and parse_iso(acts[p["id"]]["at"]) - now() < timedelta(hours=12) for p in act_posts)
+        send_digest("\n\n".join(act_lines), [full_post(p, line) for p, line in zip(act_posts, act_lines)],
+                    state=state, urgent=soon)
+        # The reminders for the window we're already in would repeat this message: count them as sent.
+        sent = state.setdefault("remindersSent", [])
+        for p in act_posts:
+            a = acts[p["id"]]
+            if a["at"]:
+                left = (parse_iso(a["at"]) - now()).total_seconds() / 3600
+                sent += [f"ev:{p['id']}:{a['at']}:{h}" for h in ACTION_HOURS if h >= left]
+    new_posts = [p for p in new_posts if p not in act_posts]
+    lines = [describe_post(p, jobs, post_seat(state, p)) for p in new_posts]
     new_open = [j for j in open_jobs if had_seen and j["id"] not in seen_open and not j["signed"] and (j["eligible"] or j["bonus"])]
     open_lines = [f"🆕 New JAF you can sign{'' if j['eligible'] else ' (bonus)'}: *{short_name(j['company'])}* – "
                   f"{j['title']} · {money(j['ctc'], j['currency'])} · closes {when(j['closesAt'])}" for j in new_open]
@@ -919,15 +1158,15 @@ def check_reminders(state):
     _, quiet_end = quiet_window()
     quiet = in_quiet()
 
-    def consider(key, at, line):
+    def consider(key, at, line, hours=REMIND_HOURS):
         left = (parse_iso(at) - now()).total_seconds() / 3600
-        h = next((x for x in REMIND_HOURS if 0 < left <= x), None)  # tightest window we're in
+        h = next((x for x in sorted(hours) if 0 < left <= x), None)  # tightest window we're in
         if h is None or f"{key}:{h}" in sent_set:
             return
         is_urgent = parse_iso(at) < quiet_end + timedelta(hours=1)  # due before you'd see the morning messages
         if quiet and not is_urgent:
             return  # wait: after quiet hours it's written fresh, with the right countdown
-        for x in REMIND_HOURS:
+        for x in hours:
             if x >= h and f"{key}:{x}" not in sent_set:
                 sent_set.add(f"{key}:{x}")
                 sent.append(f"{key}:{x}")
@@ -935,6 +1174,10 @@ def check_reminders(state):
 
     for e in visible_events(state.get("events") or []):
         # Keyed by blog post: when a company posts again about a test, its reminders start again.
+        if e.get("what"):  # a form / registration you must do
+            consider(f"ev:{e['id']}:{e['at']}", e["at"], f"🚨 *{e['company']}*: due {until(e['at'])} ({when(e['at'])})\n"
+                     f"{e['what']}\n{e['link']}", ACTION_HOURS)
+            continue
         consider(f"ev:{e['id']}:{e['at']}", e["at"],
                  f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + where(e))
     for j in state.get("openJobs") or []:
@@ -1051,7 +1294,9 @@ def status_text(state):
 def set_hidden(query, hide):
     """Hide/unhide one of your companies by (part of) its name. Returns the reply text."""
     jobs = load(STATE, {}).get("jobs") or {}
-    names = sorted({j["company"] for j in jobs.values()})
+    state = load(STATE, {})
+    # Your signed companies, plus companies whose PPTs you're reminded of
+    names = sorted({j["company"] for j in jobs.values()} | {e["company"] for e in state.get("events") or [] if e["kind"] == "PPT"})
     q = query.strip().lower()
     matches = [n for n in names if q and (q in n.lower() or q in short_name(n).lower())]
     if not q or not matches:
@@ -1086,7 +1331,7 @@ def catchup_parts(state):
         "*IITB placement catch-up*",
         section("Coming up (next 48 h)", [f"{e['icon']} *{e['company']}*: {e['kind']} {when(e['at'])}" + where(e) for e in events]),
         section("JAFs you can still sign, closing within 24 h", [f"⏰ *{short_name(j['company'])}* closes {until(j['closesAt'])} ({when(j['closesAt'])}): {j['title']} · {money(j['ctc'], j['currency'])}" for j in closing]),
-        section("Updates in the last 24 h", [describe_post(p, jobs) for p in recent]),
+        section("Updates in the last 24 h", [describe_post(p, jobs, post_seat(state, p)) for p in recent]),
     ]))
     count = len(events) + len(closing) + len(recent)
     if not count:
@@ -1094,7 +1339,7 @@ def catchup_parts(state):
         return none, [none], 0
     # WhatsApp: the upcoming / closing summary as one message, then each recent update on its own.
     summary = text.split("\n\n*Updates in the last 24 h*")[0]
-    items = ([summary] if events or closing else []) + [full_post(p, describe_post(p, jobs)) for p in recent]
+    items = ([summary] if events or closing else []) + [full_post(p, describe_post(p, jobs, post_seat(state, p))) for p in recent]
     return text, items, count
 
 
@@ -1160,7 +1405,7 @@ def ping_health(ok, detail=""):
 
 
 def write_web(state):
-    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error", "postEvents", "postSeats")})
+    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error", "postEvents", "postSeats", "postActions")})
 
 
 def main():

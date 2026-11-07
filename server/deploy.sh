@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 scp -q server/jaf_sync.py server/jaf_whatsapp.py server/jaf_ai.py server/jaf_transcribe.py "$SERVER":~/jaf-sync/
 scp -q -r jaf-tracker "$SERVER":~/                 # the website reuses the extension's pages
-scp -q server/web.py server/web-shim.js "$SERVER":~/jaf-web/
+scp -q server/web.py server/web-shim.js server/device-session.js server/sw.js "$SERVER":~/jaf-web/
 ssh "$SERVER" '
   systemctl --user restart jaf-web
   systemctl --user is-enabled --quiet jaf-whatsapp && systemctl --user restart jaf-whatsapp
