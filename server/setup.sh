@@ -12,7 +12,7 @@ SYNC="$HOME/jaf-sync"
 WEB="$HOME/jaf-web"
 UNITS="$HOME/.config/systemd/user"
 
-for f in jaf_sync.py jaf_whatsapp.py jaf_ai.py jaf_transcribe.py web.py web-shim.js device-session.js sw.js; do
+for f in jaf_sync.py jaf_whatsapp.py jaf_ai.py jaf_transcribe.py jaf_backup.py web.py web-shim.js device-session.js sw.js; do
   [ -f "$HOME/$f" ] || { echo "Missing ~/$f. Copy the project files first (see the top of this script)."; exit 1; }
 done
 [ -f "$HOME/jaf-tracker/dashboard.html" ] || { echo "Missing ~/jaf-tracker (the website reuses its pages)."; exit 1; }
@@ -25,7 +25,7 @@ sudo timedatectl set-timezone Asia/Kolkata
 echo "==> Files (private to your user)"
 mkdir -p "$SYNC" "$WEB" "$UNITS"
 chmod 700 "$SYNC"
-mv "$HOME/jaf_sync.py" "$HOME/jaf_whatsapp.py" "$HOME/jaf_ai.py" "$HOME/jaf_transcribe.py" "$SYNC/"
+mv "$HOME/jaf_sync.py" "$HOME/jaf_whatsapp.py" "$HOME/jaf_ai.py" "$HOME/jaf_transcribe.py" "$HOME/jaf_backup.py" "$SYNC/"
 mv "$HOME/web.py" "$HOME/web-shim.js" "$HOME/device-session.js" "$HOME/sw.js" "$WEB/"
 # The secret key the laptop extension uses to send your login (copy it to the laptop afterwards).
 [ -f "$SYNC/key" ] || (umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$SYNC/key")
@@ -68,6 +68,29 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# Daily encrypted backup of ~/jaf-sync (waits until you set a password: jaf_backup.py set-password)
+cat > "$UNITS/jaf-backup.service" <<'EOF'
+[Unit]
+Description=JAF Tracker encrypted backup of ~/jaf-sync
+ConditionPathExists=%h/jaf-sync/backup-password
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/jaf-sync/jaf_backup.py backup
+EOF
+
+cat > "$UNITS/jaf-backup.timer" <<'EOF'
+[Unit]
+Description=JAF Tracker daily backup
+
+[Timer]
+OnCalendar=*-*-* 04:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > "$UNITS/jaf-web.service" <<'EOF'
 [Unit]
 Description=JAF Tracker website (localhost only; published privately with Tailscale Serve)
@@ -97,7 +120,7 @@ EOF
 
 sudo loginctl enable-linger "$USER"   # keep your services running without an SSH login
 systemctl --user daemon-reload
-systemctl --user enable --now jaf-web jaf-sync.timer
+systemctl --user enable --now jaf-web jaf-sync.timer jaf-backup.timer
 # jaf-whatsapp is enabled after you link the spare number (server/README.md → WhatsApp).
 
 echo "==> SSH hardening (key-only login was already the default on Oracle images)"

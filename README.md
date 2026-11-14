@@ -93,6 +93,8 @@ you hide meanwhile are sent to the server when you reconnect.
   the server, which syncs straight away.
 - **About every 2 weeks at most**, if you get "IITB SSO login needed": open the placement blog in
   laptop Chrome and click the SSO login.
+- **Backups** run by themselves: the server encrypts its settings and data every night and your laptop copies them
+  (`server/README.md` → Backups). Keep the backup password in your password manager.
 - **Every week or two**, open WhatsApp on the spare phone so its linked devices stay active.
 
 ## Setting it up
@@ -115,6 +117,7 @@ Point it at [`AGENTS.md`](AGENTS.md): the step-by-step guide, rules and known pi
 | `server/web.py`, `server/web-shim.js`, `server/sw.js` | The private website, the shim that lets the extension's pages run as a site, and the service worker that makes it work offline |
 | `server/setup.sh` | One-time setup of a fresh server |
 | `server/deploy.sh` | Copies your changes to the server and restarts what's affected |
+| `server/jaf_backup.py`, `server/backup-pull.sh` | Nightly encrypted backup of the server's settings and data, copied to your laptop |
 
 Nothing personal is in the code. Your server's address goes in `server/local.env` and your settings
 and logins live only on the server, all outside git (see `.gitignore`).

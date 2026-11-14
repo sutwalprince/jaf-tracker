@@ -190,6 +190,36 @@ roll number, and only your room/seat is kept (`state.json → seats`); the file 
 company's test is still ahead, the sheet is re-read every 30 min. Changing `POST_FORMAT` in `jaf_sync.py`
 makes the next sync re-read the whole blog once (GET only, no repeat messages).
 
+## Backups
+
+`~/jaf-sync` (settings, logins, the WhatsApp link, website password and passkeys, read/hidden lists, reminder
+history) exists only on the server, and none of it is in git. If Oracle reclaims the VM, a backup saves you
+re-linking WhatsApp and re-entering everything.
+
+```bash
+server/backup-pull.sh set-password   # on your laptop, once: choose the backup password (typed hidden, sent to the server)
+server/backup-pull.sh install        # on your laptop, once: pull the newest backup 4 times a day
+```
+
+- Every night at 04:30 the server writes `~/jaf-backups/jaf-sync-<date>.tar.gz.gpg` (`jaf-backup.timer`):
+  encrypted with gpg AES-256 and your password, WhatsApp's database copied safely while in use, about 70 KB.
+  The server keeps 3; your laptop keeps the last 14 in `~/jaf-backups`.
+- Not included: the code (in git), the Python venv and the voice model (`setup.sh` recreates them).
+- **Keep the password in a password manager.** Without it a backup can't be opened; with it, the file is safe
+  to keep anywhere (Google Drive, a USB stick).
+- Check one: `scp` it to the server, then `~/jaf-sync/jaf_backup.py verify <file>` (lists names and sizes).
+
+**Restore on a new server:** run §2 (setup) with the code from git, then
+
+```bash
+scp ~/jaf-backups/<newest>.tar.gz.gpg ubuntu@<new-ip>:~/
+ssh -t ubuntu@<new-ip> '~/jaf-sync/jaf_backup.py restore ~/<newest>.tar.gz.gpg'   # asks for the password
+```
+
+It stops the services, puts everything back and starts them again. Then update `server/local.env` with the new
+address, set up Tailscale (§3; name the machine as before to keep the same website address) and log in to the
+portal once so the extension sends your login.
+
 ## Troubleshooting
 
 | Symptom | Fix |

@@ -79,7 +79,7 @@ question by text and by voice note.
   round durations are free text in each job's `processes[].duration`.
 - **One WhatsApp connection per linked device**: only `jaf-whatsapp.service` connects; everything else
   queues files in `~/jaf-sync/wa-outbox/`. Stop the service before running `pair`.
-- **neonize/whatsmeow can hang on disconnect**: the scripts end with `os._exit()`; keep that.
+- **neonize/whatsmeow can hang on disconnect**: the scripts end with `os._exit()`; keep that. `jaf_whatsapp.py` includes a 45-second watchdog that calls `os._exit(1)` when disconnected so systemd cleanly restarts the service and re-establishes the connection.
 - **Never `pkill -f <pattern>` over SSH** when the pattern also appears in your SSH command line: it kills
   your own session. Use `pgrep` and kill by PID.
 - **faster-whisper + PyAV 19**: `decode_audio` passes an argument PyAV removed, so `jaf_transcribe.py`
@@ -120,4 +120,6 @@ question by text and by voice note.
   change the extension, then reload it in `chrome://extensions`.
 - **Reminders**: they're keyed by blog post (a company's repeat post restarts them, by design) and are not
   queued during quiet hours, so their countdown is always fresh.
-- **Oracle free VMs can be reclaimed when idle**; the healthchecks.io ping is how the student finds out.
+- **Oracle free VMs can be reclaimed when idle**; the healthchecks.io ping is how the student finds out, and
+  `jaf_backup.py restore` (nightly encrypted backups, pulled to the laptop by `backup-pull.sh`) brings it all back.
+  The student chooses the backup password themselves (`backup-pull.sh set-password`).

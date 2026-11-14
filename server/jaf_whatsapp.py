@@ -48,6 +48,7 @@ TYPING_CHARS_PER_SECOND = 60  # how long "typing…" shows, from the message len
 TYPING_SECONDS = (1.5, 6.0)  # …kept within these bounds
 QUICK_TYPING_SECONDS = (0.5, 2.5)  # replies to your messages: brief "typing…"
 QUICK_GAP_SECONDS = (1.0, 2.0)
+DISCONNECT_RESTART_SECONDS = 45  # restart process so systemd re-establishes clean websocket on disconnect
 
 HELP = ("🤖 *JAF Tracker commands*\n"
         "• *today*: today's tests, PPTs and JAF deadlines\n"
@@ -204,6 +205,7 @@ def serve():
     client = NewClient(DB)
     connected = threading.Event()
     send_lock = threading.Lock()
+    disconnected_at = time.time()
 
     def presence(jid, state):
         try:
@@ -236,12 +238,17 @@ def serve():
 
     @client.event(ConnectedEv)
     def _connected(_c, _ev):
+        nonlocal disconnected_at
+        disconnected_at = None
         connected.set()
         write_status(True)
 
     @client.event(DisconnectedEv)
     def _disconnected(_c, _ev):
+        nonlocal disconnected_at
         connected.clear()
+        if disconnected_at is None:
+            disconnected_at = time.time()
 
     @client.event(LoggedOutEv)
     def _logged_out(_c, _ev):
@@ -288,6 +295,11 @@ def serve():
     while True:
         time.sleep(2)
         if not connected.is_set():
+            if disconnected_at and (time.time() - disconnected_at > DISCONNECT_RESTART_SECONDS):
+                write_status(False, "disconnected: restarting service to reconnect")
+                sys.stderr.write(f"WhatsApp disconnected for >{DISCONNECT_RESTART_SECONDS}s: restarting service\n")
+                sys.stderr.flush()
+                os._exit(1)
             continue
         if time.time() - last_beat > 60:
             write_status(True)
