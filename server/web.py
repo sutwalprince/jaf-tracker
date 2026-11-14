@@ -404,6 +404,11 @@ class Site(BaseHTTPRequestHandler):
         # Nginx always overwrites X-Real-IP, so a visitor can't fake it. Tailscale Serve doesn't set it.
         return self.headers.get("X-Real-IP") or self.client_address[0]
 
+    def write_body(self, body):
+        """Writes response body only for non-HEAD requests."""
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def deny(self):
         if "text/html" in self.headers.get("Accept", ""):
             self.redirect("/login")
@@ -414,7 +419,7 @@ class Site(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def redirect(self, location, cookie=None):
         self.send_response(303)
@@ -436,7 +441,7 @@ class Site(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; "
                          "script-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def send_status(self, status, cookie=None, obj=None):
         body = json.dumps(obj).encode() if obj is not None else b""
@@ -447,7 +452,7 @@ class Site(BaseHTTPRequestHandler):
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def handle_passkey(self, route):
         # Set only by Nginx. A password must never travel unencrypted, even before HTTPS is switched on.
@@ -556,7 +561,9 @@ class Site(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
+
+    do_HEAD = do_GET
 
     def send_json(self, obj):
         body = json.dumps(obj).encode()
@@ -565,7 +572,7 @@ class Site(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def read_ids(self, add=()):
         """The shared list of posts you've read, on any device. Only grows (posts are never un-read)."""
@@ -602,6 +609,8 @@ class Site(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
+            if self.command == "HEAD":
+                return
             self.wfile.write(b"retry: 5000\n\n")
             stamp, started, pinged = data_stamp(), time.monotonic(), time.monotonic()
             while time.monotonic() - started < PUSH_MAX_AGE:

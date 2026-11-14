@@ -304,19 +304,38 @@ def serve():
         if time.time() - last_beat > 60:
             write_status(True)
             last_beat = time.time()
+        recipient = main_number()
+        if not recipient:
+            continue
+        jid = build_jid(recipient)
         for f in sorted(OUTBOX.glob("*.json")):  # oldest first
             try:
                 messages = json.loads(f.read_text()).get("messages", [])
             except (OSError, ValueError):
                 f.unlink(missing_ok=True)
                 continue
-            jid = build_jid(main_number())
+            retries = 0
             while messages:  # drop each message once WhatsApp has accepted it, so nothing is sent twice
-                send(jid, [messages[0]])
-                messages = messages[1:]
-                if messages:
-                    J.save(f, {"messages": messages}, private=True)
-            f.unlink(missing_ok=True)
+                try:
+                    send(jid, [messages[0]])
+                    messages = messages[1:]
+                    retries = 0
+                    if messages:
+                        J.save(f, {"messages": messages}, private=True)
+                except Exception as e:
+                    retries += 1
+                    sys.stderr.write(f"WhatsApp send error ({f.name}, attempt {retries}): {e}\n")
+                    sys.stderr.flush()
+                    if retries >= 3:
+                        sys.stderr.write(f"Dropping failing message from {f.name} after 3 attempts\n")
+                        messages = messages[1:]
+                        if messages:
+                            J.save(f, {"messages": messages}, private=True)
+                        retries = 0
+                    time.sleep(3)
+                    break
+            if not messages:
+                f.unlink(missing_ok=True)
 
 
 # ---------- linking ----------
