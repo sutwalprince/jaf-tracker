@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """AI for the JAF Tracker: summaries of new JAFs, and answers to your WhatsApp questions.
 
-Provider: Google Gemini (config.json → gemini, the default; free tier) or Claude (config.json → anthropic).
-Set config.json → ai.provider to "gemini" or "claude". Gemini is called over HTTPS with the standard library.
+Provider: Google Gemini (config.json → gemini; free tier), Claude (config.json → anthropic) or OpenRouter
+(config.json → openrouter; any model, paid from your OpenRouter credits, asks providers not to keep or train on
+prompts). Set config.json → ai.provider to "gemini", "claude" or "openrouter" (set-openrouter-key does it).
+Gemini and OpenRouter are called over HTTPS with the standard library.
 On the Gemini free tier Google may use prompts to improve its products.
 
 Hard monthly budget: config.json → ai.monthlyLimitInr (default ₹250). Every call is priced at the provider's
@@ -15,8 +17,10 @@ The AI only reads data the tracker already stored; it never touches the placemen
 """
 import fcntl
 import json
+import re
 import sys
 import time
+from datetime import datetime, timedelta
 import urllib.error
 import urllib.request
 
@@ -25,6 +29,9 @@ import jaf_sync as J
 CLAUDE_MODEL = "claude-sonnet-5-5"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_FALLBACK = "gemini-3.5-flash-lite"  # used when the main model is busy, slow or out of free quota
+OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"  # accurate at copying exact quotes, about ₹0.02 a post
+OPENROUTER_FALLBACK = "openai/gpt-6-luna"  # OpenRouter switches to it when the main one is down
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 USAGE = J.DIR / "ai-usage.json"
 SAFETY = 1.15  # price every call 15% high, so rounding can never let the month pass the limit
@@ -45,11 +52,16 @@ class AIUnavailable(Exception):
 
 def settings():
     cfg = J.load(J.CONFIG, {})
-    ai, g, a = cfg.get("ai") or {}, cfg.get("gemini") or {}, cfg.get("anthropic") or {}
+    ai, g, a, o = cfg.get("ai") or {}, cfg.get("gemini") or {}, cfg.get("anthropic") or {}, cfg.get("openrouter") or {}
     provider = ai.get("provider") or ("gemini" if g.get("apiKey") or not a.get("apiKey") else "claude")
-    key, model = (g.get("apiKey"), g.get("model", GEMINI_MODEL)) if provider == "gemini" \
-        else (a.get("apiKey"), a.get("model", CLAUDE_MODEL))
-    return {"provider": provider, "key": key, "model": model, "fallback": g.get("fallbackModel", GEMINI_FALLBACK),
+    key, model, fallback = {
+        "gemini": (g.get("apiKey"), g.get("model", GEMINI_MODEL), g.get("fallbackModel", GEMINI_FALLBACK)),
+        "claude": (a.get("apiKey"), a.get("model", CLAUDE_MODEL), None),
+        "openrouter": (o.get("apiKey"), o.get("model", OPENROUTER_MODEL), o.get("fallbackModel", OPENROUTER_FALLBACK)),
+    }.get(provider, (None, None, None))
+    return {"provider": provider, "key": key, "model": model, "fallback": fallback,
+            # On Gemini's free tier Google may use prompts: the post checks wait for a paid provider unless you say so.
+            "postChecks": ai.get("postChecks", provider != "gemini"),
             "limit_inr": float(ai.get("monthlyLimitInr", a.get("monthlyLimitInr", 250))),
             "usd_inr": float(ai.get("usdToInr", 90)),
             "summaries": ai.get("summaries", True), "answers": ai.get("answers", True)}
@@ -75,9 +87,10 @@ def _prices(model):
     return next((p for k, p in PRICES.items() if k in (model or "")), PRICES["opus"])  # unknown: assume pricier
 
 
-def _record(model, tokens_in, tokens_out, s, cache_read=0, cache_write=0):
+def _record(model, tokens_in, tokens_out, s, cache_read=0, cache_write=0, usd=None):
     p = _prices(model)
-    usd = (tokens_in * p[0] + tokens_out * p[1] + cache_read * p[2] + cache_write * p[3]) / 1e6
+    if usd is None:  # OpenRouter reports the real cost; the others are priced from token counts
+        usd = (tokens_in * p[0] + tokens_out * p[1] + cache_read * p[2] + cache_write * p[3]) / 1e6
     inr = usd * s["usd_inr"] * SAFETY
     with open(J.DIR / ".ai-usage.lock", "w") as lock:  # the sync and the WhatsApp service both record spend
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -100,6 +113,8 @@ def ask(system, user, effort, max_tokens):
         raise BudgetExceeded(f"₹{s['limit_inr']:.0f} monthly AI budget reached")
     if s["provider"] == "claude":
         return _ask_claude(system, user, effort, max_tokens, s)
+    if s["provider"] == "openrouter":
+        return _ask_openrouter(system, user, effort, max_tokens, s)
     # Main model, then the fast fallback, then the fallback once more after a short pause: the free tier is
     # sometimes slow or busy for a minute.
     attempts = [(s["model"], 0), (s["fallback"], 0), (s["fallback"], 3)]
@@ -154,6 +169,39 @@ def _ask_gemini(system, user, effort, max_tokens, s, model, thinking=True):
     if not text:
         raise AIUnavailable("empty reply")
     return text
+
+
+def _ask_openrouter(system, user, effort, max_tokens, s, models=None):
+    """user: text, or a list of content parts (text and input_audio)."""
+    body = {"models": models or [m for m in (s["model"], s["fallback"]) if m], "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "reasoning": {"effort": effort}, "usage": {"include": True},
+            "provider": {"data_collection": "deny"}}  # only providers that don't keep or train on prompts
+    req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {s['key']}",
+                                          "X-Title": "IITB JAF Tracker"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise AIUnavailable("the OpenRouter API key was rejected") from e
+        if e.code == 402:
+            raise AIUnavailable("OpenRouter credits have run out") from e
+        if e.code in (408, 429, 500, 502, 503, 504):
+            raise AIUnavailable("OpenRouter is busy right now; try again in a few minutes") from e
+        raise AIUnavailable(f"OpenRouter API error {e.code}") from e
+    except (TimeoutError, urllib.error.URLError, ConnectionError, OSError) as e:
+        raise AIUnavailable("couldn't reach OpenRouter") from e
+    if data.get("error"):
+        raise AIUnavailable(f"OpenRouter: {str(data['error'].get('message', data['error']))[:120]}")
+    u = data.get("usage") or {}
+    _record(data.get("model") or s["model"], u.get("prompt_tokens", 0), u.get("completion_tokens", 0), s,
+            usd=u.get("cost"))
+    text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    if not text.strip():
+        raise AIUnavailable("empty reply")
+    return text.strip()
 
 
 def _ask_claude(system, user, effort, max_tokens, s):
@@ -273,7 +321,9 @@ def answer(question, state):
                         if J.parse_iso(j["closesAt"]) > now],
         "upcoming": [{"company": e["company"], "what": e["kind"], "when": J.when(e["at"]), "venue": e.get("venue")}
                      for e in J.visible_events(state.get("events") or []) if J.parse_iso(e["at"]) > now],
-        "recentBlogPosts": [{"posted": J.when(p["date"]), "title": p["title"], "text": p["text"][:1200]} for p in recent],
+        # Roll numbers removed (shortlists name other students); namesYou says whether one of them was yours.
+        "recentBlogPosts": [{"posted": J.when(p["date"]), "title": p["title"], "namesYou": bool(p.get("mentionsMe")),
+                             "text": J.ROLL_LIKE.sub("<roll no>", p["text"][:1200])} for p in recent],
     }
     for j in _named_companies(question, jobs + (state.get("openJobs") or []))[:3]:
         context.setdefault("detailsOfCompaniesYouAskedAbout", []).append({
@@ -281,6 +331,90 @@ def answer(question, state):
             "compensationAndInfo": (j.get("info") or "")[:1500], "requirements": (j.get("requirements") or "")[:1500]})
     user = f"Tracker data:\n{json.dumps(context, ensure_ascii=False)}\n\nQuestion: {question.strip()}"
     return ask(ANSWER_SYSTEM, user, effort="low", max_tokens=3000)
+
+
+# ---------- a second reader for posts about your tests, interviews, PPTs and forms ----------
+
+READ_SYSTEM = """You read one IIT Bombay placement blog post for a student and find, for THAT student's job only:
+- event: a test, interview, PPT, group discussion or other session they must attend, with its date and start time;
+- deadline: a form, registration or submission they must complete, with its due date and time.
+Reply with JSON only, no other text:
+{"event": null or {"kind": "Test" | "Interview" | "PPT" | "Group discussion" | "Other", "date": "YYYY-MM-DD",
+  "time": "HH:MM" (24-hour, India time), "venue": "room or place, or empty", "quote": "..."},
+ "deadline": null or {"date": "YYYY-MM-DD", "time": "HH:MM", "what": "what to do, at most 15 words", "quote": "..."}}
+Rules:
+- "quote" is a short piece of the post copied exactly, character for character, that contains the time.
+- Never guess. A date with no time, or "timings will be shared", means null.
+- When the post lists several job codes or profiles, use only the student's own.
+- A deadline only for something the student must do, not for people who have a problem."""
+
+
+def _squash(t):
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def _checked(item, kind_key, text, posted):
+    """item with "at" (ISO) if its quote is really in the post and holds its time, and its date is sensible; else None."""
+    if not isinstance(item, dict):
+        return None
+    try:
+        at = datetime.strptime(f"{item['date']} {item['time']}", "%Y-%m-%d %H:%M").replace(tzinfo=J.IST)
+    except (KeyError, TypeError, ValueError):
+        return None
+    quote = _squash(str(item.get("quote") or ""))
+    h12 = at.hour % 12 or 12
+    if not quote or quote not in _squash(text) or not re.search(rf"(?<!\d)0?({h12}|{at.hour})(?!\d)", quote):
+        return None  # made up, or a quote that doesn't say this time
+    if not posted - timedelta(days=1) <= at <= posted + timedelta(days=60):
+        return None
+    out = {"at": J.iso(at), "quote": item["quote"][:150]}
+    if kind_key == "event":
+        out["kind"] = item.get("kind") if item.get("kind") in ("Test", "Interview", "PPT", "Group discussion") else "Other"
+        out["venue"] = str(item.get("venue") or "")[:60]
+    else:
+        out["what"] = str(item.get("what") or "")[:120]
+    return out
+
+
+def read_post(post, mine):
+    """{"event": {...} or None, "deadline": {...} or None}, each kept only when its quote checks out."""
+    text = J.without_links(post["text"])
+    posted = J.parse_iso(post.get("date") or "") or J.now()
+    jobs = "; ".join(f"Job Code {j.get('code')}: {j.get('title')}" for j in mine) or "not known"
+    user = (f"Post date: {posted.astimezone(J.IST):%A %d %B %Y}\nStudent's job(s): {jobs}\n"
+            f"Title: {post['title']}\n\n{J.ROLL_LIKE.sub('<roll no>', text)}")
+    reply = ask(READ_SYSTEM, user, effort="low", max_tokens=600)
+    try:
+        data = json.loads(re.sub(r"^```(?:json)?|```$", "", reply.strip()).strip())
+    except ValueError as e:
+        raise AIUnavailable("the AI's reply wasn't JSON") from e
+    return {k: _checked(data.get(k), k, text, posted) for k in ("event", "deadline")}
+
+
+
+# ---------- voice notes ----------
+
+VOICE_MODELS = ["google/gemini-3.6-flash", "google/gemini-3.5-flash-lite"]  # hear audio; cheap (about ₹0.07 a minute)
+VOICE_SYSTEM = """You write out a WhatsApp voice note from an IIT Bombay student to their placement assistant.
+Write exactly the words that are spoken in the audio, in Roman letters. If they speak Hindi or Hinglish, keep their
+words as romanized Hindi (do not translate). Never add words that aren't spoken, never guess a question.
+If the audio has no clear human speech (silence, music, a tone, noise), reply exactly: NO_SPEECH
+Reply with only the spoken words, no quotes or notes.
+Only for spelling words you actually hear: {hints}"""
+
+
+def transcribe_audio(mp3, hints):
+    """The text of a voice note (MP3 bytes), by an audio model on OpenRouter. Raises AIUnavailable / BudgetExceeded."""
+    s = settings()
+    if s["provider"] != "openrouter" or not s["key"]:
+        raise AIUnavailable("voice notes need OpenRouter")
+    if spent_inr() + 2 > s["limit_inr"]:  # a voice note costs well under ₹1
+        raise BudgetExceeded(f"₹{s['limit_inr']:.0f} monthly AI budget reached")
+    import base64
+    parts = [{"type": "text", "text": "Write out this voice note."},
+             {"type": "input_audio", "input_audio": {"data": base64.b64encode(mp3).decode(), "format": "mp3"}}]
+    text = _ask_openrouter(VOICE_SYSTEM.format(hints=hints), parts, "low", 1000, s, models=VOICE_MODELS).strip()
+    return "" if "NO_SPEECH" in text else text
 
 
 if __name__ == "__main__":

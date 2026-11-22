@@ -581,7 +581,7 @@ class Site(BaseHTTPRequestHandler):
             new = {str(i) for i in add if str(i).isdigit()} - ids
             if new:
                 ids |= new
-                tmp = READ_FILE.with_suffix(".tmp")
+                tmp = READ_FILE.with_name(f"read.json.{os.getpid()}.{threading.get_ident()}.tmp")
                 tmp.write_text(json.dumps(sorted(ids, key=int)[-MAX_READ:]))
                 os.replace(tmp, READ_FILE)
             return sorted(ids, key=int)
@@ -592,7 +592,7 @@ class Site(BaseHTTPRequestHandler):
             names = set(json.loads(HIDDEN_FILE.read_text())) if HIDDEN_FILE.exists() else set()
             new = (names | {str(n)[:200] for n in hide}) - {str(n) for n in unhide}
             if new != names:
-                tmp = HIDDEN_FILE.with_suffix(".tmp")
+                tmp = HIDDEN_FILE.with_name(f"hidden.json.{os.getpid()}.{threading.get_ident()}.tmp")
                 tmp.write_text(json.dumps(sorted(new)))
                 os.replace(tmp, HIDDEN_FILE)
             return sorted(new)

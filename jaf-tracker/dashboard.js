@@ -102,8 +102,10 @@ function render() {
   $('sync').disabled = !!state.syncing;
   $('login').hidden = !loggedOut;
   $('loginMsg').textContent = state.auth?.msg || '';
-  $('error').hidden = !state.error;
-  $('error').textContent = state.error ? `Last sync failed: ${state.error}` : '';
+  const problem = state.error || (state.ssoAlerted ? 'IITB SSO login ended, so new blog posts can\'t be read: open the '
+    + 'placement blog on your laptop and log in (JAFs and reminders still update).' : '');
+  $('error').hidden = !problem;
+  $('error').textContent = problem;
   const chState = (cfg, st) => !cfg?.enabled ? '· off'
     : st && !st.ok ? `· last send failed: ${st.msg}`
     : st ? `· on, last sent ${ago(st.at)}` : '· on';

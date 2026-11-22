@@ -118,6 +118,16 @@ free tier **Google may use your prompts to improve its products**.
 **Claude instead (paid):** `jaf_sync.py set-anthropic-key` with a key from console.anthropic.com
 (uses `claude-sonnet-5-5`). Switch back any time with `set-gemini-key`.
 
+**OpenRouter instead (paid from your credits):** `jaf_sync.py set-openrouter-key` with a key from openrouter.ai/keys.
+It uses `anthropic/claude-haiku-5.5` (about ₹0.02 a post), with `openai/gpt-6-luna` if that's down, and asks
+only providers that don't keep or train on prompts. Change `openrouter.model` in `config.json` for another model.
+
+**Second reader for posts** (`ai.postChecks`, on by default): the AI reads each recent post about your tests,
+interviews, PPTs and forms once more. It must quote the exact words with the time, and the code checks that quote is
+in the post, or the answer is dropped. If it disagrees with the tracker's own reading, the message says
+"⚠️ The AI read the time as …"; when only the AI could read a time, it becomes a reminder marked "🤖 read by AI".
+Roll numbers are removed before posts are sent. Shortlists and seating sheets never go to the AI.
+
 Settings in `config.json`:
 
 ```json

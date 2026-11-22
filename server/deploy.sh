@@ -6,6 +6,7 @@ set -euo pipefail
 [ -f "$(dirname "$0")/local.env" ] && . "$(dirname "$0")/local.env"
 SERVER="${JAF_SERVER:?Set JAF_SERVER in server/local.env (e.g. JAF_SERVER=ubuntu@<server-ip>)}"
 cd "$(dirname "$0")/.."
+python3 -I server/test_jaf_sync.py >/dev/null || { echo "Tests failed: not deploying (python3 -I server/test_jaf_sync.py)"; exit 1; }
 
 scp -q server/jaf_sync.py server/jaf_whatsapp.py server/jaf_ai.py server/jaf_transcribe.py server/jaf_backup.py "$SERVER":~/jaf-sync/
 scp -q -r jaf-tracker "$SERVER":~/                 # the website reuses the extension's pages

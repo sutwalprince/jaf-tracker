@@ -19,7 +19,7 @@ done
 
 echo "==> Packages"
 sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv python3-cryptography poppler-utils >/dev/null  # poppler-utils: pdftotext, for seating-sheet PDFs
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv python3-cryptography poppler-utils ffmpeg >/dev/null  # pdftotext (seating-sheet PDFs), ffmpeg (voice notes)
 sudo timedatectl set-timezone Asia/Kolkata
 
 echo "==> Files (private to your user)"

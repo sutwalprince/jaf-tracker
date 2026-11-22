@@ -1,7 +1,8 @@
 import { ORIGIN, BLOG_URL, relevantPosts, shortName, formatDuration, withoutLinks } from './common.js';
 
 // 2: post text keeps links as "label (url)"; a change re-reads the whole blog once.
-const POST_FORMAT = 2;
+const POST_FORMAT = 3; // 3: once, to pick up old edits
+const EDIT_DAYS = 2; // shortcut: edits to older posts are missed; raise it if the blog edits old posts
 
 // A JAF's selection rounds in order, with readable durations.
 const roundsFrom = list => [...(list || [])].sort((x, y) => x.order - y.order)
@@ -115,7 +116,7 @@ async function sync() {
     await doSync();
   } catch (e) {
     if (e instanceof AuthError) await needLogin('Your placement portal session has ended.');
-    else await chrome.storage.local.set({ error: String(e.message || e) });
+    else await chrome.storage.local.set({ error: `Last sync failed: ${e.message || e}` });
   } finally {
     syncing = false;
     await chrome.storage.local.set({ syncing: false });
@@ -123,6 +124,7 @@ async function sync() {
     await pushSession().catch(() => {});
     await syncReadIds().catch(() => {});
     await syncHidden().catch(() => {});
+    await pullServerTimes().catch(() => {});
   }
   // A sync was requested while this one ran (e.g. you just logged in): run once more.
   if (again) sync();
@@ -371,18 +373,44 @@ async function syncReadIds() {
   if (all.length !== readIds.length) await chrome.storage.local.set({ readIds: all });
 }
 
-// Hidden companies are shared with the website and the server's messages the same way.
+// Hidden companies are shared with the website and the server's messages the same way. A change made while the
+// server can't be reached waits in hiddenPending, so the server's list doesn't overwrite it.
 async function syncHidden(hide = [], unhide = []) {
-  const { serverSync: cfg, hiddenCompanies = [] } = await chrome.storage.local.get(['serverSync', 'hiddenCompanies']);
+  const { serverSync: cfg, hiddenCompanies = [], hiddenPending: was = { hide: [], unhide: [] } } =
+    await chrome.storage.local.get(['serverSync', 'hiddenCompanies', 'hiddenPending']);
   if (!cfg?.enabled || !cfg.url) return;
-  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/api/hidden`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hide, unhide }),
-  });
-  if (!res.ok) return;
+  const pending = {
+    hide: [...new Set([...was.hide.filter(c => !unhide.includes(c)), ...hide])],
+    unhide: [...new Set([...was.unhide.filter(c => !hide.includes(c)), ...unhide])],
+  };
+  let res;
+  try {
+    res = await fetch(`${cfg.url.replace(/\/+$/, '')}/api/hidden`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pending),
+    });
+  } catch (e) {
+    await chrome.storage.local.set({ hiddenPending: pending });
+    throw e;
+  }
+  if (!res.ok) { await chrome.storage.local.set({ hiddenPending: pending }); return; }
+  await chrome.storage.local.set({ hiddenPending: { hide: [], unhide: [] } });
   const server = (await res.json()).hidden;
   if ([...server].sort().join('\n') !== [...hiddenCompanies].sort().join('\n')) {
     await chrome.storage.local.set({ hiddenCompanies: server });
   }
+}
+
+// Test times, form deadlines and rooms as the server read them (job codes, deadline lines, the AI's check,
+// seating sheets), so the extension shows what WhatsApp and the website say. Without the server: its own reading.
+async function pullServerTimes() {
+  const { serverSync: cfg } = await chrome.storage.local.get('serverSync');
+  if (!cfg?.enabled || !cfg.url) return;
+  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/data.json`, { cache: 'no-store' });
+  if (!res.ok) return;
+  const d = await res.json();
+  if (!d.lastSync) return;
+  await chrome.storage.local.set({ events: d.events || [], postEvents: d.postEvents || {},
+    postActions: d.postActions || {}, postSeats: d.postSeats || {} });
 }
 
 // A fresh SSO login (e.g. you logged in to the blog) is sent straight away.
@@ -491,7 +519,9 @@ async function readBlog(st, me, firstRun) {
         if (!known.has(p.id)) fresh.push(p);
         known.set(p.id, p); // refresh edited posts too
       }
-      if (!firstRun && st.posts?.some(p => p.id === posts.at(-1).id)) break;
+      // Posts get edited after they go up (a draft first, the real title and job codes later): re-read 2 days back.
+      const last = Date.parse(posts.at(-1)?.date || '');
+      if (!firstRun && st.posts?.some(p => p.id === posts.at(-1).id) && !(last > Date.now() - EDIT_DAYS * 864e5)) break;
     }
     return { known, fresh };
   } catch (e) {

@@ -2,6 +2,7 @@
 """Transcribes a WhatsApp voice note on this server (nothing is sent anywhere) and prints the text.
 
   jaf_transcribe.py <audio file> [hint words]
+  jaf_transcribe.py --speech <audio file>     seconds of speech in it (Silero VAD; fast, no Whisper model)
 
 Uses faster-whisper's multilingual "base" model (English, Hindi, Hinglish), int8 on the CPU. It runs as a
 short-lived process, so the model's ~300 MB is freed as soon as it's done. The first run downloads the model
@@ -33,9 +34,18 @@ def load_audio(path):
     return np.concatenate(chunks).astype(np.float32) / 32768.0
 
 
+def speech_seconds(audio):
+    """How much of the audio is human speech. An audio model asked to write out silence makes up a question."""
+    from faster_whisper.vad import get_speech_timestamps
+    return sum(t["end"] - t["start"] for t in get_speech_timestamps(audio)) / RATE
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
+    if sys.argv[1] == "--speech" and len(sys.argv) == 3:
+        print(f"{speech_seconds(load_audio(sys.argv[2])):.2f}")
+        return
     audio = load_audio(sys.argv[1])
     model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=2, download_root=str(MODELS))
     segments, _info = model.transcribe(audio, beam_size=1, vad_filter=True,

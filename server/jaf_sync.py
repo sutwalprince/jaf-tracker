@@ -18,10 +18,11 @@ If config.json has "healthcheck" (a healthchecks.io ping URL), every run pings i
 New JAFs you can sign get an AI summary on WhatsApp (Gemini or Claude, see jaf_ai.py) within a hard monthly budget.
 
 Usage:  jaf_sync.py [sync | catchup | morning | evening | status | ai
-                     | summarize-open [--dry-run] [--limit N] | set-gemini-key | set-anthropic-key]
+                     | summarize-open [--dry-run] [--limit N] | set-gemini-key | set-anthropic-key | set-openrouter-key]
 """
 import fcntl
 import getpass
+import hashlib
 import html
 import http.cookiejar
 import json
@@ -62,7 +63,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 MAX_PAGES = 40
 TEXT_LIMIT = 8000
-POST_FORMAT = 3  # 2: links kept as "label (url)"; 3: broken links (not web addresses) dropped. A change re-reads the blog once
+POST_FORMAT = 4  # 2: links kept as "label (url)"; 3: broken links dropped; 4: once, to pick up old edits. A change re-reads the blog once
+FULL_READ = 86400  # seconds between full blog reads (every page: edits to old posts, posts taken down)
+GONE_MAX = 5
+JAF_TITLE = re.compile(r"\bjaf\b", re.I)
+EDIT_DAYS = 2  # shortcut: edits to posts older than this are missed; raise it if the blog edits old posts
 DETAIL_TTL = 3600            # seconds before re-reading a JAF's details
 BLOG_WARN = 3600             # seconds the blog must keep failing before telling you
 REMIND_HOURS = (4, 12, 24)
@@ -78,7 +83,7 @@ def load(path, default):
 
 
 def save(path, data, private=False):
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # its own: web.py writes hidden.json too
     tmp.write_text(json.dumps(data, ensure_ascii=False))
     if private:
         os.chmod(tmp, 0o600)
@@ -337,7 +342,10 @@ MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", 
 MON = "|".join(MONTHS)
 DATE_DM = re.compile(rf"(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({MON})[a-z]*\.?,?\s*(?:\(\w+\)\s*,?\s*)?(\d{{4}})?", re.I)
 DATE_MD = re.compile(rf"\b({MON})[a-z]*\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b,?\s*(\d{{4}})?", re.I)
-TIME = re.compile(r"(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s*m\b", re.I)
+DATE_NUM = re.compile(r"(?<![\d/.-])(\d{1,2})[/.-](\d{1,2})[/.-](20\d{2})(?![\d/.-])")  # 22/11/2026, day first
+# Lines about a form or registration, not the test itself ("Deadline of the Registration – 5:30 PM")
+DEADLINE_LINE = re.compile(r"deadline|regist|\bforms?\b|submi|\bfill", re.I)
+TIME = re.compile(r"(?<![\d:])(\d{1,2})(?:\s?[:.]\s?(\d{2}))?\s*([ap])\.?\s*m\b", re.I)  # also "9: 30 AM"
 KINDS = [
     (re.compile(r"registration|mock", re.I), "Registration / mock test due", "📝"),
     (re.compile(r"\btest\b|assessment|exam", re.I), "Test", "📝"),
@@ -354,6 +362,9 @@ def find_date(s, year):
     m = DATE_MD.search(s)
     if m:
         return int(m.group(2)), MONTHS.index(m.group(1).lower()[:3]), int(m.group(3) or year)
+    m = DATE_NUM.search(s)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(1)), int(m.group(2)) - 1, int(m.group(3))
     return None
 
 
@@ -387,30 +398,69 @@ def post_jobs(p, jobs):
     return [jobs[str(i)] for i in p.get("jobIds") or [] if str(i) in jobs]
 
 
-def extract_event(post, company, mine=()):
-    kind = next((k for k in KINDS if k[0].search(post["title"])), None)
-    if not kind:
-        return None
+def label_value(label, text, between=25):
+    """What follows "<label> …:" in text, allowing a few words between ("Date & Time of Test: 9:30 PM")."""
+    # Same line only; no digits in between ("Deadline ( 11:59 pm …)": the colon in 11:59 isn't the label's).
+    m = re.search(rf"\b{label}\b[^:\n–\d]{{0,{between}}}?[ \t]*[:\-–(][ \t]*([^\n]{{0,90}})", text, re.I)
+    return m.group(1) if m else ""
 
+
+def extract_event(post, company, mine=()):
+    """The test / PPT / interview a post announces: the rules' reading, corrected or filled in by the AI's
+    quote-checked one when there is one (post["ai"], see with_ai)."""
+    kind = next((k for k in KINDS if k[0].search(post["title"])), None)
+    return with_ai(rules_event(post, company, mine, kind) if kind else None, post, company)
+
+
+def rules_event(post, company, mine, kind):
     text = without_links(post["text"])
     part = my_part(text, mine)  # your job's own lines win over the rest of the post
 
     def seg(label, src=None):
-        m = re.search(rf"\b{label}\s*[:\-–]\s*([^\n]{{0,90}})", text if src is None else src, re.I)
-        return m.group(1) if m else ""
+        return label_value(label, text if src is None else src)
 
+    lines = text.split("\n")
+    if kind is not KINDS[0]:  # a test's time is on a line about the test, not the registration deadline's
+        about = "\n".join(line for line in lines if kind[0].search(line) and not DEADLINE_LINE.search(line))
+        rest = "\n".join(line for line in lines if not DEADLINE_LINE.search(line))
+    else:
+        about, rest = "", text
     year = (parse_iso(post.get("date") or "") or now()).year
-    date = find_date(seg("date", part) or seg("date") or seg("deadline"), year) or find_date(text, year)
-    time = (find_time(part) if part else None) or find_time(seg("updated time") or seg("time") or seg("deadline")) or find_time(text)
+    # Your job's lines, then a "Date …:" / "Time …:" label (not on a registration line), then lines about the test.
+    due = seg("deadline") if kind is KINDS[0] else ""  # a deadline is the time only of a registration / mock test
+    date = (find_date(seg("date", part), year) or find_date(seg("date", rest), year) or find_date(about, year)
+            or find_date(due, year) or find_date(rest, year) or find_date(text, year))
+    time = ((find_time(part) if part else None) or find_time(seg("updated time")) or find_time(seg("tim(?:e|ings?)", rest))
+            or find_time(about) or find_time(due) or find_time(rest) or find_time(text))
     if not date or not time:
         return None
     try:
         at = datetime(date[2], date[1] + 1, date[0], time[0], time[1], tzinfo=IST)
     except ValueError:
         return None
-    venue = re.sub(r"\s+", " ", seg("venue", part) or seg("venue")).strip()[:60]
+    venue = re.sub(r"\s+", " ", label_value("venue", part, 0) or label_value("venue", text, 0)).strip()[:60]
     return {"id": post["id"], "company": company, "kind": kind[1], "icon": kind[2], "at": iso(at),
             "venue": venue, "title": post["title"], "link": post["link"]}
+
+
+def with_ai(e, post, company):
+    """The AI's reading (post["ai"]: quote-checked, see jaf_ai.read_post) fills in an event the rules missed, and
+    corrects their time when its quote is about the event itself ("Date & Time of Test: 9:30 PM"); otherwise a
+    disagreement is only flagged (aiAt)."""
+    ev = (post.get("ai") or {}).get("event")
+    if not ev:
+        return e
+    kind = next((k for k in KINDS if k[1].lower().startswith(ev["kind"].lower()[:4])), None)
+    if not e:
+        return {"id": post["id"], "company": company, "kind": kind[1] if kind else ev["kind"],
+                "icon": kind[2] if kind else "📌", "at": ev["at"], "venue": ev["venue"], "title": post["title"],
+                "link": post["link"], "ai": "read", "quote": ev["quote"]}
+    if ev["at"] == e["at"]:
+        return e
+    if kind and kind[0].search(ev["quote"]) and not DEADLINE_LINE.search(ev["quote"]):
+        return {**e, "at": ev["at"], "venue": e["venue"] or ev["venue"], "ai": "fixed", "rulesAt": e["at"],
+                "quote": ev["quote"]}
+    return {**e, "aiAt": ev["at"]}
 
 
 def where(e):
@@ -446,8 +496,8 @@ ACTION_HOURS = (24, 12, 4, 1)  # reminders before a form / registration deadline
 def action_deadline(post, hits, text):
     """When the task is due: a date/time in the task's own sentences, else in a "Deadline:" line."""
     posted = (parse_iso(post.get("date") or "") or now()).astimezone(IST)
-    m = re.search(r"\bdeadline\s*[:\-–]\s*([^\n]{0,90})", text, re.I)
-    for src in hits + ([m.group(1)] if m else []):
+    m = label_value("deadline", text)
+    for src in hits + ([m] if m else []):
         t, d = find_time(src), find_date(src, posted.year)
         day = (d[0], d[1] + 1, d[2]) if d else None
         if not day:
@@ -460,6 +510,10 @@ def action_deadline(post, hits, text):
         except ValueError:
             continue
     return None
+
+
+def rules_action(post, mine=()):
+    return action_of({**post, "ai": None}, mine)
 
 
 def action_of(post, mine=()):
@@ -480,7 +534,14 @@ def action_of(post, mine=()):
         hits.append(line)
     if not hits:
         return None
-    return {"what": hits[0][:200], "at": action_deadline(post, hits, text)}
+    a = {"what": hits[0][:200], "at": action_deadline(post, hits, text)}
+    dl = (post.get("ai") or {}).get("deadline")  # the AI's quote-checked reading: fills in or corrects
+    if dl and dl["at"] != a["at"]:
+        if not a["at"] or re.search(r"deadline|\bdue\b|\bby\b|before|last date|regist|fill|submi", dl["quote"], re.I):
+            a.update({"at": dl["at"], "ai": "fixed" if a["at"] else "read", "rulesAt": a["at"], "quote": dl["quote"]})
+        else:
+            a["aiAt"] = dl["at"]
+    return a
 
 
 def action_events(posts, jobs):
@@ -491,7 +552,8 @@ def action_events(posts, jobs):
         a = action_of(p, post_jobs(p, jobs))
         if a and a["at"] and parse_iso(a["at"]) > now() - timedelta(hours=1) and company not in out:
             out[company] = {"id": p["id"], "company": company, "kind": "Form / registration due", "icon": "🚨",
-                            "at": a["at"], "venue": "", "title": p["title"], "link": p["link"], "what": a["what"]}
+                            "at": a["at"], "venue": "", "title": p["title"], "link": p["link"], "what": a["what"],
+                            **({"ai": a["ai"]} if a.get("ai") else {})}
     return list(out.values())
 
 
@@ -687,6 +749,7 @@ def update_seats(state, jobs, job_list, notify=True, fresh_ids=()):
 # ---------- shortlists: are you still in? ----------
 
 LIST_TITLE = re.compile(r"short-?list|wait-?list|selected|selection list|final (?:list|selection)|result|offer", re.I)
+LIST_LINK = re.compile("(?:" + LIST_TITLE.pattern + r")[^\n]*https?://", re.I)  # "Test Shortlist: Link (https://…)" in a "Test Announcement"
 ROLL_LIKE = re.compile(r"(?<![A-Za-z0-9])\d{2}[A-Za-z]\d{4}(?![A-Za-z0-9])|(?<!\d)\d{9}(?!\d)")
 LIST_DAYS = 10         # lists in posts from the last 10 days are read
 LIST_MIN = 5           # a list needs this many roll numbers before "you're not on it" counts
@@ -709,7 +772,7 @@ def check_lists(state, posts, jobs, fresh_ids=(), notify=True):
     msgs, hide = [], set()
     for p in relevant_posts(posts, active_jobs(jobs)):
         posted = parse_iso(p.get("date") or "")
-        if not p["jobIds"] or not LIST_TITLE.search(p["title"]) or not posted or posted < cutoff:
+        if not p["jobIds"] or not (LIST_TITLE.search(p["title"]) or LIST_LINK.search(p["text"])) or not posted or posted < cutoff:
             continue
         old = lists.get(p["id"]) or {}
         if "inList" in old or old.get("tries", 0) >= LIST_TRIES:
@@ -770,9 +833,83 @@ def describe_post(p, jobs, seat=None):
         return f"🎉 Your name is in: *{p['title']}*"
     e = extract_event(p, company, post_jobs(p, jobs))
     if e and parse_iso(e["at"]) > now():
-        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + where({**e, "seat": seat})
+        return f"{e['icon']} *{company}*: {e['kind']} {when(e['at'])}" + where({**e, "seat": seat}) + ai_note(e)
     rest = "|".join(p["title"].split("|")[1:]).strip()
-    return f"📢 *{company}*: {rest or p['title']}" + room
+    unread = "\n⚠️ I couldn't read the time from this post: check it yourself." if not e and unreadable(p) else ""
+    return f"📢 *{company}*: {rest or p['title']}" + room + unread
+
+
+def ai_note(e=None, a=None):
+    """What the AI changed or doubts about an event's time (e) or a form's deadline (a), for the message."""
+    out = ""
+    for x, what in ((e, "time"), (a, "deadline")):
+        if not x:
+            continue
+        if x.get("ai") == "read":
+            out += f"\n🤖 The {what} was read by AI from “{x['quote']}”: check the post."
+        elif x.get("ai") == "fixed":
+            out += f"\n🤖 {what.capitalize()} corrected by AI (I'd read {when(x['rulesAt'])}) from “{x['quote']}”"
+        elif x.get("aiAt"):
+            out += f"\n⚠️ The AI read the {what} as *{when(x['aiAt'])}*: check the post."
+    return out
+
+
+def ai_read_posts(state, posts, jobs):
+    """The AI reads recent posts about tests, interviews, PPTs and forms a second time (once per version of the
+    post), into state["aiReads"]; attach_ai() puts it on the posts. Off without an AI key or with ai.postChecks false."""
+    try:
+        import jaf_ai
+    except ImportError:
+        return
+    if not jaf_ai.settings()["key"] or not jaf_ai.settings()["postChecks"]:
+        return
+    reads = {k: v for k, v in (state.get("aiReads") or {}).items() if now().timestamp() - v.get("checkedAt", 0) < 30 * 86400}
+    cutoff = now() - timedelta(days=EDIT_DAYS)
+    for p in posts:
+        posted = parse_iso(p.get("date") or "")
+        mine = post_jobs(p, jobs)
+        if not posted or posted < cutoff or not (any(k[0].search(p["title"]) for k in KINDS)
+                                                 or rules_action(p, mine) or unreadable(p)):
+            continue
+        version = post_version(p)
+        if (reads.get(p["id"]) or {}).get("version") == version:
+            continue
+        try:
+            reads[p["id"]] = {**jaf_ai.read_post(p, mine), "version": version, "checkedAt": now().timestamp()}
+            state.pop("aiError", None)  # the AI answers again
+        except (jaf_ai.AIUnavailable, jaf_ai.BudgetExceeded) as e:
+            state["aiError"] = str(e)
+            break  # the rest wait for the next sync
+    state["aiReads"] = reads
+
+
+def attach_ai(state, posts):
+    """Puts each post's AI reading on it (post["ai"]) when it was made from the post as it is now."""
+    reads = state.get("aiReads") or {}
+    for p in posts:
+        r = reads.get(p["id"])
+        if r and r.get("version") == post_version(p):
+            p["ai"] = {"event": r.get("event"), "deadline": r.get("deadline")}
+        else:
+            p.pop("ai", None)
+
+
+def post_version(p):
+    return hashlib.sha1((p["title"] + p["text"]).encode()).hexdigest()[:12]
+
+
+def unreadable(p):
+    """A test / interview / PPT post, or an update that mentions one, with a date still ahead, but no event time
+    I could read (extract_event needs the kind in the title, a date and a time)."""
+    text = without_links(p["text"])
+    if JAF_TITLE.search(p["title"]) or not any(k[0].search(p["title"] + "\n" + text) for k in KINDS[1:]):
+        return False
+    posted = parse_iso(p.get("date") or "") or now()
+    d = find_date(text, posted.year)
+    try:
+        return bool(d) and datetime(d[2], d[1] + 1, d[0], 23, 59, tzinfo=IST) > now()
+    except ValueError:
+        return False
 
 
 def post_seat(state, p):
@@ -958,8 +1095,9 @@ def jar_cookies(jar):
              "httpOnly": c.has_nonstandard_attr("HttpOnly"), "expirationDate": c.expires} for c in jar]
 
 
-def read_blog(state, me, jar, first_run):
-    """Returns {known, fresh} or {error, ssoLoggedOut?}."""
+def read_blog(state, me, jar, first_run, full=False):
+    """Returns {known, fresh, edited: [(old, new)], gone} or {error, ssoLoggedOut?}. first_run (or a format change)
+    re-reads every page quietly; full re-reads every page and reports edits and posts taken down."""
     op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     # Like a normal page visit: the blog's SSO module only signs in requests that ask for a web page.
     op.addheaders = [("User-Agent", UA), ("Accept", "text/html,application/xhtml+xml,*/*;q=0.8"),
@@ -987,19 +1125,35 @@ def read_blog(state, me, jar, first_run):
 
     known = {p["id"]: p for p in state.get("posts", [])}
     old_ids = set(known)
-    fresh = []
+    fresh, edited, seen = [], [], set()
+    last_date = ""
     for page in range(1, MAX_PAGES + 1):
         res = first if page == 1 else get(f"{BLOG_URL}?paged={page}")
         if res[0] == 404 or not is_blog(res):
             break
         posts = parse_blog(res[2], me)
         for p in posts:
-            if p["id"] not in known:
+            old = known.get(p["id"])
+            if old is None:
                 fresh.append(p)
+            elif not first_run and (old["title"], old["text"]) != (p["title"], p["text"]):
+                edited.append((old, p))
+            seen.add(p["id"])
             known[p["id"]] = p
-        if not first_run and posts and posts[-1]["id"] in old_ids:
+        # Posts get edited after they go up (a draft first, the real title and job codes later): re-read 2 days back.
+        last = parse_iso(posts[-1].get("date")) if posts else None
+        if not (first_run or full) and posts and posts[-1]["id"] in old_ids and (not last or last < now() - timedelta(days=EDIT_DAYS)):
             break
-    return {"known": known, "fresh": fresh}
+        last_date = (posts[-1].get("date") or "") if posts else last_date
+    gone = []
+    if (first_run or full) and seen and last_date:
+        # Taken down: newer than the last post we read, yet not on any page. (Not min(): a pinned old post sits on top.)
+        gone = [p for i, p in known.items() if i not in seen and (p.get("date") or "") > last_date]
+        if len(gone) > GONE_MAX:  # that many at once is a page we misread, not the placement team deleting posts
+            gone = []
+        for p in gone:
+            known.pop(p["id"])
+    return {"known": known, "fresh": fresh, "edited": edited, "gone": gone if not first_run else []}
 
 
 # ---------- sync ----------
@@ -1077,12 +1231,19 @@ def sync():
     first_run = not state.get("lastSync")
     jar = cookie_jar(session.get("cookies", []))
     # Re-read every page (not just new posts) on the first run or when the post text format changed.
-    result = read_blog(state, me, jar, first_run or state.get("postFormat") != POST_FORMAT)
+    full = now().timestamp() - state.get("fullReadAt", 0) > FULL_READ  # once a day: every page, edits and removals
+    result = read_blog(state, me, jar, first_run or state.get("postFormat") != POST_FORMAT, full)
     session["cookies"] = jar_cookies(jar)  # keep any refreshed cookies
     save(SESSION, session, private=True)
     blog = result if "known" in result else None
     if blog:
         state["postFormat"] = POST_FORMAT
+        if full:
+            state["fullReadAt"] = now().timestamp()
+    edited = blog["edited"] if blog else []
+    for old, new in edited:  # a link added later (a shortlist sheet): read the post's lists again
+        if re.findall(r"https?://\S+", old["text"]) != re.findall(r"https?://\S+", new["text"]):
+            (state.get("lists") or {}).pop(new["id"], None)
     known = blog["known"] if blog else {p["id"]: p for p in state.get("posts", [])}
     fresh = blog["fresh"] if blog else []
     failing_since = None if blog else (state.get("blogFailingSince") or now().timestamp())
@@ -1099,6 +1260,11 @@ def sync():
         check_lists(state, all_posts, jobs, {p["id"] for p in fresh}, notify=not first_run)
     except Exception as e:  # noqa: BLE001 - a bonus; never break the sync
         print(f"lists: {e}", file=sys.stderr)
+    try:  # the AI's second reading, before times are worked out (events, reminders, website)
+        ai_read_posts(state, relevant_posts(all_posts, active_jobs(jobs)) + ppt_posts(all_posts, list(jobs.values())), jobs)
+    except Exception as e:  # noqa: BLE001 - a second opinion; never break the sync
+        print(f"ai reads: {e}", file=sys.stderr)
+    attach_ai(state, all_posts)
     events = extract_events(sorted(relevant_posts(all_posts, list(jobs.values())) + ppt_posts(all_posts, list(jobs.values())),
                                    key=lambda p: p.get("date") or "", reverse=True), jobs)
     job_list = active_jobs(jobs)  # messages skip hidden companies (posts naming you still come through)
@@ -1127,17 +1293,13 @@ def sync():
     acts = {p["id"]: action_of(p, post_jobs(p, jobs)) for p in new_posts}
     act_posts = [p for p in new_posts if acts[p["id"]] and (not acts[p["id"]]["at"] or parse_iso(acts[p["id"]]["at"]) > now())]
     if not first_run and act_posts:
-        act_lines = [action_line(p, acts[p["id"]], company_of(p, jobs)) for p in act_posts]
+        act_lines = [action_line(p, acts[p["id"]], company_of(p, jobs)) + ai_note(a=acts[p["id"]]) for p in act_posts]
         soon = any(acts[p["id"]]["at"] and parse_iso(acts[p["id"]]["at"]) - now() < timedelta(hours=12) for p in act_posts)
         send_digest("\n\n".join(act_lines), [full_post(p, line) for p, line in zip(act_posts, act_lines)],
                     state=state, urgent=soon)
         # The reminders for the window we're already in would repeat this message: count them as sent.
-        sent = state.setdefault("remindersSent", [])
         for p in act_posts:
-            a = acts[p["id"]]
-            if a["at"]:
-                left = (parse_iso(a["at"]) - now()).total_seconds() / 3600
-                sent += [f"ev:{p['id']}:{a['at']}:{h}" for h in ACTION_HOURS if h >= left]
+            mark_sent(state, p["id"], acts[p["id"]]["at"], ACTION_HOURS)
     new_posts = [p for p in new_posts if p not in act_posts]
     lines = [describe_post(p, jobs, post_seat(state, p)) for p in new_posts]
     new_open = [j for j in open_jobs if had_seen and j["id"] not in seen_open and not j["signed"] and (j["eligible"] or j["bonus"])]
@@ -1147,7 +1309,55 @@ def sync():
         open_items = [ai_summary(j, line, state) for j, line in zip(new_open, open_lines)]
         send_digest("*IITB placement updates*\n\n" + "\n\n".join(lines + open_lines),
                     [full_post(p, l) for p, l in zip(new_posts, lines)] + open_items, state=state)
+
+    # Posts about your companies that were edited or taken down
+    olds = {new["id"]: old for old, new in edited}
+    news = [new for _, new in edited]
+    changed = {p["id"]: p for p in relevant_posts(news, job_list) + ppt_posts(news, list(jobs.values()))}.values()
+    gone = blog["gone"] if blog else []
+    gone_mine = {p["id"]: p for p in relevant_posts(gone, job_list) + ppt_posts(gone, list(jobs.values()))}.values()
+    if not first_run and (changed or gone_mine):
+        edits = [edit_line(olds[p["id"]], p, jobs) for p in changed]
+        for p, (_, at, hours) in zip(changed, edits):
+            if at:
+                mark_sent(state, p["id"], at, hours)
+        lines = [line for line, _, _ in edits] + [f"🗑️ *{company_of(p, jobs)}*: post taken down from the blog: {p['title']}"
+                                                   for p in gone_mine]
+        soon = any(at and parse_iso(at) - now() < timedelta(hours=12) for _, at, _ in edits)
+        send_digest("\n\n".join(lines), [full_post(p, line) for p, (line, _, _) in zip(changed, edits)]
+                    + lines[len(edits):], state=state, urgent=soon)
     return state
+
+
+def mark_sent(state, post_id, at, hours):
+    """A message that already says a time: the reminders for the window we're in would repeat it."""
+    if at and parse_iso(at) > now():
+        left = (parse_iso(at) - now()).total_seconds() / 3600
+        state.setdefault("remindersSent", []).extend(f"ev:{post_id}:{at}:{h}" for h in hours if h >= left)
+
+
+def edit_line(old, new, jobs):
+    """(message, new time it gives or None, reminder hours) for a post about your company that was edited."""
+    company, mine = company_of(new, jobs), post_jobs(new, jobs)
+    a, b = extract_event(old, company, mine), extract_event(new, company, mine)
+    x, y = action_of(old, mine), action_of(new, mine)
+    out, at, hours = [], None, REMIND_HOURS
+    if old["title"] != new["title"]:
+        out.append(f"Title: {old['title']} → *{new['title']}*")
+    if b and (not a or (a["at"], a["venue"]) != (b["at"], b["venue"])):
+        was = f" (was {when(a['at'])}{' · ' + a['venue'] if a['venue'] else ''})" if a else ""
+        out.append(f"{b['icon']} {b['kind']}: *{when(b['at'])}*{where(b)}{was}")
+        at = b["at"]
+    elif a and not b:
+        out.append(f"The {a['kind'].lower()} time ({when(a['at'])}) isn't in the post any more: check it")
+    if y and (not x or x["at"] != y["at"]):
+        out.append(action_line(new, y, company))
+        at, hours = (y["at"], ACTION_HOURS) if y["at"] else (at, hours)
+    if set(re.findall(r"https?://\S+", new["text"])) - set(re.findall(r"https?://\S+", old["text"])):
+        out.append("New link in the post")
+    if not out:
+        out.append("Details changed: see the post")
+    return f"✏️ *{company}* post updated: {new['title']}\n" + "\n".join(out) + ai_note(b, y), at, hours
 
 
 def check_reminders(state):
@@ -1175,11 +1385,12 @@ def check_reminders(state):
     for e in visible_events(state.get("events") or []):
         # Keyed by blog post: when a company posts again about a test, its reminders start again.
         if e.get("what"):  # a form / registration you must do
-            consider(f"ev:{e['id']}:{e['at']}", e["at"], f"🚨 *{e['company']}*: due {until(e['at'])} ({when(e['at'])})\n"
-                     f"{e['what']}\n{e['link']}", ACTION_HOURS)
+            consider(f"ev:{e['id']}:{e['at']}", e["at"], f"🚨 *{e['company']}*: due {until(e['at'])} ({when(e['at'])})"
+                     + (" (🤖 read by AI)" if e.get("ai") else "") + f"\n{e['what']}\n{e['link']}", ACTION_HOURS)
             continue
         consider(f"ev:{e['id']}:{e['at']}", e["at"],
-                 f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + where(e))
+                 f"⏰ *{e['company']}*: {e['kind']} {until(e['at'])} ({when(e['at'])})" + where(e)
+                 + (" (🤖 read by AI: check the post)" if e.get("ai") else ""))
     for j in state.get("openJobs") or []:
         if j["signed"] or not (j["eligible"] or j["bonus"]):
             continue
@@ -1405,7 +1616,8 @@ def ping_health(ok, detail=""):
 
 
 def write_web(state):
-    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error", "postEvents", "postSeats", "postActions")})
+    save(WEB_DATA, {k: state.get(k) for k in ("me", "jobs", "posts", "events", "openJobs", "lastSync", "auth", "error",
+                                              "ssoAlerted", "postEvents", "postSeats", "postActions")})
 
 
 def main():
@@ -1421,6 +1633,17 @@ def main():
         cfg["ai"].setdefault("monthlyLimitInr", 250)
         save(CONFIG, cfg, private=True)
         print("Saved. AI now uses Gemini (free tier), with a ₹250 monthly cap if billing is ever turned on.")
+        return
+    if cmd == "set-openrouter-key":  # typed in, never shown, stored only in config.json (0600)
+        key = getpass.getpass("OpenRouter API key from openrouter.ai/keys (input hidden): ").strip()
+        if not key.startswith("sk-or-"):
+            sys.exit("That doesn't look like an OpenRouter API key (it starts with sk-or-).")
+        cfg = load(CONFIG, {})
+        cfg.setdefault("openrouter", {}).update({"apiKey": key})
+        cfg.setdefault("ai", {}).update({"provider": "openrouter"})
+        cfg["ai"].setdefault("monthlyLimitInr", 250)
+        save(CONFIG, cfg, private=True)
+        print("Saved. AI now uses OpenRouter (anthropic/claude-haiku-5.5), with a ₹250 monthly limit.")
         return
     if cmd == "set-anthropic-key":  # typed in, never shown, stored only in config.json (0600)
         key = getpass.getpass("Anthropic API key (input hidden): ").strip()

@@ -112,6 +112,9 @@ question by text and by voice note.
   reminders), not only signed ones; `title_company()` reads the company from the title. `hide` accepts these too.
 - **The optional public site's settings** (domain, passkey user name) live in `~/jaf-sync/site.json` on the
   server, never in git; the repo has only `jaf.example.com`.
+- **Every post the tracker once read wrong is a test** in `server/test_jaf_sync.py` (made-up text, no network);
+  `deploy.sh` runs it first. Add the case before fixing a new one. Edited posts are re-read 2 days back each sync
+  and on a daily full read, which also drops posts taken down (never more than 5 at once).
 - **Seating sheets name other students.** Read them only on the server, keep only the student's own row,
   never print or save the rest. Most are PDFs on `bighome.iitb.ac.in` (needs `pdftotext`).
 - **Post text keeps links as `label (url)`.** Anything parsing post text for dates/venues must use

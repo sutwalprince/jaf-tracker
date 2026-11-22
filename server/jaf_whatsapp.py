@@ -40,6 +40,7 @@ OUTBOX = DIR / "wa-outbox"
 STATUS = DIR / "wa-status.json"
 MAX_COMMAND_AGE = 600  # seconds; older commands (delivered after a restart) are ignored
 MAX_VOICE_SECONDS = 120
+MIN_SPEECH_SECONDS = 0.4  # less than this: no question in it, and the AI would invent one
 VOICE_DIR = DIR / "voice"  # voice notes live here only while being transcribed
 WA_PYTHON = DIR / "wa-venv" / "bin" / "python"
 COMMANDS = {"today", "open", "sync", "hide", "unhide", "status", "catchup", "catch-up", "help"}
@@ -126,10 +127,31 @@ def transcribe(client, ev):
         state = J.load(J.STATE, {})
         companies = {J.short_name(j["company"]) for j in list((state.get("jobs") or {}).values()) + (state.get("openJobs") or [])}
         hints = "JAF, JAFs, PPT, CPI, CTC, shortlist, deadline, interview, signed, eligible. " + ", ".join(sorted(companies))
-        r = subprocess.run([str(WA_PYTHON), "-I", str(DIR / "jaf_transcribe.py"), str(path), hints],
-                           capture_output=True, text=True, timeout=240)
-        text = r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:  # noqa: BLE001
+        started, text = time.time(), ""
+        # An audio model on OpenRouter hears Indian English, Hinglish and company names far better than the small
+        # Whisper model this server can run; Whisper is the fallback. Only the engine and timing are logged.
+        try:
+            import jaf_ai
+            vad = subprocess.run([str(WA_PYTHON), "-I", str(DIR / "jaf_transcribe.py"), "--speech", str(path)],
+                                 capture_output=True, text=True, timeout=60, check=True)
+            if float(vad.stdout.strip() or 0) < MIN_SPEECH_SECONDS:
+                print(f"voice: {audio.seconds}s note, no speech found", file=sys.stderr, flush=True)
+                return None, "🎙 I couldn't hear any speech in that voice note. Could you try again, or type it?"
+            mp3 = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path), "-ac", "1", "-ar", "16000",
+                                  "-b:a", "32k", "-f", "mp3", "-"], capture_output=True, timeout=60, check=True).stdout
+            text = jaf_ai.transcribe_audio(mp3, hints).strip()
+            engine = "ai"
+        except Exception as e:  # noqa: BLE001 - not set up, over budget or down: Whisper on this server
+            print(f"voice: AI transcription unavailable ({type(e).__name__}: {str(e)[:100]}), using Whisper",
+                  file=sys.stderr, flush=True)
+            r = subprocess.run([str(WA_PYTHON), "-I", str(DIR / "jaf_transcribe.py"), str(path), hints],
+                               capture_output=True, text=True, timeout=240)
+            text = r.stdout.strip() if r.returncode == 0 else ""
+            engine = "whisper" if r.returncode == 0 else f"whisper failed: {r.stderr.strip()[-200:]}"
+        print(f"voice: {audio.seconds}s note, {engine}, {time.time() - started:.1f}s, {len(text)} chars",
+              file=sys.stderr, flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"voice: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr, flush=True)
         text = ""
     finally:
         path.unlink(missing_ok=True)
