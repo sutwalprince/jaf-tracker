@@ -245,6 +245,7 @@ def serve():
                 lo, hi = QUICK_TYPING_SECONDS if quick else TYPING_SECONDS
                 time.sleep(min(hi, max(lo, len(part) / TYPING_CHARS_PER_SECOND)) + random.uniform(0, 0.5))
                 client.send_message(jid, part)
+                J.log_sent("whatsapp", part)
                 presence(jid, ChatPresence.CHAT_PRESENCE_PAUSED)
                 if n < len(parts) - 1:
                     time.sleep(random.uniform(*(QUICK_GAP_SECONDS if quick else GAP_SECONDS)))

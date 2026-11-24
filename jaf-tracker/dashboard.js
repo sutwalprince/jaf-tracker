@@ -192,10 +192,10 @@ function render() {
   if (!snapshotting) scheduleSnapshots();
 }
 
-// " · LH 301 · 💺 Your room: LH 101" for a test (your room comes from the seating sheet, on the website).
+// " · LH 301 · 💺 Your seat: LH 101" for a test (your room comes from the seating sheet, on the website).
 function placeHtml(e) {
   const tba = /announc|tba|tbd/i.test(e.venue || '');
-  return (e.venue && !(e.seat && tba) ? ` · ${esc(e.venue)}` : '') + (e.seat ? ` · 💺 Your room: <b>${esc(e.seat)}</b>` : '');
+  return (e.venue && !(e.seat && tba) ? ` · ${esc(e.venue)}` : '') + (e.seat ? ` · 💺 Your seat: <b>${esc(e.seat)}</b>` : '');
 }
 
 

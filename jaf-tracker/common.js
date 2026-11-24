@@ -57,7 +57,7 @@ export function matchJobs(post, jobs) {
 export function relevantPosts(posts, jobs) {
   return posts
     .map(p => ({ ...p, jobIds: matchJobs(p, jobs) }))
-    .filter(p => p.jobIds.length || p.mentionsMe);
+    .filter(p => (p.jobIds.length && !p.forOthers) || p.mentionsMe); // forOthers: set by the server (a post only for another programme)
 }
 
 // PPTs: every company's, since a PPT usually comes before its JAF opens (same rule as the server).

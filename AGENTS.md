@@ -117,6 +117,11 @@ question by text and by voice note.
   and on a daily full read, which also drops posts taken down (never more than 5 at once).
 - **Seating sheets name other students.** Read them only on the server, keep only the student's own row,
   never print or save the rest. Most are PDFs on `bighome.iitb.ac.in` (needs `pdftotext`).
+- **Posts only for another programme** ("Test is only for MS(R) Students") replaced an M.Tech student's own test.
+  `for_other_programme()` marks them (`forOthers`) and `relevant_posts()` / `relevantPosts()` skip them; PG/UG count as groups.
+- **Seating PDFs can list students under a heading** ("Venue: LA 202") with only a seat in the row: `with_sections()`
+  carries the room down. A post that flips between versions is reported once (`postVersions`).
+- **What was sent** is in `~/jaf-sync/sent.jsonl` on the server (0600, never in git); read it there when a message looks wrong.
 - **Post text keeps links as `label (url)`.** Anything parsing post text for dates/venues must use
   `without_links()` / `withoutLinks()` first; the website renders links with `linkify()`.
 - **Chrome caches extension background code by version**: bump `version` in `manifest.json` whenever you

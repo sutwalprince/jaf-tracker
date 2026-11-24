@@ -204,6 +204,57 @@ def test_edits_two_days_back_and_daily_full_read():
     assert sorted(n["id"] for _, n in r["edited"]) == sorted([live[15]["id"], live[40]["id"]]) and not r["gone"]
 
 
+def test_post_flipping_between_versions_is_reported_once():
+    # Microsoft's test post was "updated" 13 times in 4 hours: each version change sent a message again.
+    a = blog_posts(3)
+    b = [{**a[0], "text": "Venue: LA201"}, *a[1:]]
+    state = {"posts": [dict(p) for p in a]}
+    reported = []
+    for live in (b, a, b, a):
+        J.urllib.request.build_opener = lambda *x, live=live: type("O", (), {"open": FakeBlog(live).open, "addheaders": []})()
+        r = J.read_blog(state, ME, None, False)
+        reported += [n["id"] for _, n in r["edited"]]
+        state["posts"] = list(r["known"].values())
+    assert reported == [a[0]["id"]], reported
+    s = {"remindersSent": []}
+    J.mark_sent(s, "1", "2026-11-23T10:00:00.000Z", J.REMIND_HOURS)
+    J.mark_sent(s, "1", "2026-11-23T10:00:00.000Z", J.REMIND_HOURS)
+    assert len(s["remindersSent"]) == 2, s  # 6.5 h ahead: the 12 h and 24 h windows, once each
+
+
+def test_room_from_venue_heading_above_your_row():
+    # Amazon's PDF: "Venue: LA 202" heads each room's list; the rows only have a seat ("Seat No: G13" was shown as the room).
+    head = ["Sr No", "Roll No", "Name", "Seat No"]
+    rows = [(None, ["Seating Arrangement"]), (None, ["Venue: LA 201"]), (head, ["1", "99X0001", "A B", "G1"]),
+            (head, ["Page 1"]), (head, ["Venue: LA 202"]), (head, ["139", "99X9999", "Test Student", "G13"])]
+    assert J.my_seat(J.with_sections(rows), ME["roll"], ME["name"]) == "LA 202 · Seat No: G13", J.my_seat(J.with_sections(rows), ME["roll"], ME["name"])
+    plain = [(["roll", "Room No"], ["99X9999", "LC102"])]  # Microsoft's: room in the row
+    assert J.my_seat(J.with_sections(plain), ME["roll"], ME["name"]) == "LC102"
+
+
+def test_posts_only_for_another_programme():
+    # Amazon's MS(R)-only test (today 11 am, LCOO1) replaced an M.Tech student's own test (yesterday 2:30 pm).
+    me = {**ME, "programName": "M.Tech."}
+    for text in ("Amazon will conduct test for MS(R) students.\nNOTE: Test is only for MS(R) Students and test link will be shared.",
+                 "The JAF is now open for MS(R) also.\nOnly MS(R) Students can apply.",
+                 "This test is for B.Tech and Dual Degree students only."):
+        assert J.for_other_programme(text, me), text
+    for text in ("Only for M.Tech and MS(R) students.", "Only students who filled the JAF can apply.",
+                 "Test for all students. Report only after 10 am.",
+                 "Students MUST take the test only from designated labs/classrooms under STRICT invigilation/ proctoring.",
+                 "The role is open only to eligible Dual Degree students and PG students."):
+        assert not J.for_other_programme(text, me), text
+    assert not J.for_other_programme("Only MS(R) Students can apply.", {**ME})  # programme unknown: keep the post
+
+
+def test_ai_finds_posts_of_any_date_or_company():
+    import jaf_ai
+    posts = [post(1, "Acme | Test Update", "Venue: LA 202"), post(2, "Zeta Labs | PPT", "Online"),
+             post(3, "Kalam Labs | JAF Open", "CTC 20 LPA", date="2026-10-01T10:00:00+05:30")]
+    assert [p["id"] for p in jaf_ai.search_posts("when was the kalam labs JAF?", posts)] == ["3"]
+    assert jaf_ai.search_posts("what is up", posts) == []
+
+
 def test_taken_down_posts_but_never_old_ones():
     live = blog_posts(30)
     saved = [dict(p) for p in live] + blog_posts(60)[30:]  # 30 older posts beyond the pages the blog still shows

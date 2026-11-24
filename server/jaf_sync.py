@@ -53,6 +53,8 @@ HIDDEN = DIR / "hidden.json"  # companies you've hidden (set from the dashboard 
 WA_OUTBOX = DIR / "wa-outbox"     # messages waiting for the WhatsApp service (jaf_whatsapp.py serve)
 WA_STATUS = DIR / "wa-status.json"  # the service's heartbeat
 WA_CHUNK = 4000
+SENT_LOG = DIR / "sent.jsonl"  # every message sent to you, readable only by this account (0600)
+SENT_LOG_MAX = 5_000_000  # bytes; then the older half is dropped
 WEB_DATA = HOME / "jaf-web-data.json"
 
 ORIGIN = "https://campus.placements.iitb.ac.in"
@@ -226,7 +228,7 @@ def relevant_posts(posts, jobs):
     out = []
     for p in posts:
         ids = match_jobs(p, jobs)
-        if ids or p.get("mentionsMe"):
+        if (ids and not p.get("forOthers")) or p.get("mentionsMe"):
             out.append({**p, "jobIds": ids})
     return out
 
@@ -313,6 +315,24 @@ def mention_test(me):
     return lambda text: any(p.search(text) for p in pats)
 
 
+PROGRAMMES = re.compile(r"(?<![A-Za-z])(?:MS\s*\(\s*R\s*\)|M\.?\s?Tech|B\.?\s?Tech|Ph\.?\s?D|MBA|M\.?\s?Sc|M\.?\s?Des|B\.?\s?Des|"
+                        r"Dual\s+Degree|PG|UG)(?![A-Za-z])", re.I)
+PROGRAMME_GROUPS = {"pg": {"mtech", "msr", "phd", "mba", "msc", "mdes"}, "ug": {"btech", "bdes", "dualdegree"}}
+
+
+def for_other_programme(text, me):
+    """True for a post that's only for other programmes' students ("Test is only for MS(R) Students")."""
+    mine = re.sub(r"[^a-z]", "", (me or {}).get("programName", "").lower())
+    if not mine:
+        return False
+    for line in re.split(r"(?<=[.!])\s+|\n", text):
+        if re.search(r"\bonly\b", line, re.I) and re.search(r"\bstudents?\b", line, re.I):
+            named = {re.sub(r"[^a-z]", "", m.lower()) for m in PROGRAMMES.findall(line)}
+            if named and mine not in named and not any(mine in PROGRAMME_GROUPS.get(n, ()) for n in named):
+                return True
+    return False
+
+
 def parse_blog(page, me):
     mentions = mention_test(me)
     posts = []
@@ -332,6 +352,7 @@ def parse_blog(page, me):
             "title": html_to_text(title.group(2)) if title else "(untitled)",
             "text": text if len(text) <= TEXT_LIMIT else text[:TEXT_LIMIT] + "\n…",
             "mentionsMe": mentions(text),
+            "forOthers": for_other_programme(text, me),
         })
     return posts
 
@@ -466,7 +487,7 @@ def with_ai(e, post, company):
 def where(e):
     """' · venue · 💺 Your room: LH 101' for an event line (your room from the seating sheet, when known)."""
     out = f" · {e['venue']}" if e.get("venue") and not (e.get("seat") and re.search(r"announc|tba|tbd", e["venue"], re.I)) else ""
-    return out + (f" · 💺 Your room: *{e['seat']}*" if e.get("seat") else "")
+    return out + (f" · 💺 Your seat: *{e['seat']}*" if e.get("seat") else "")
 
 
 def post_event_times(posts, jobs):
@@ -658,8 +679,8 @@ def my_seat(rows, roll, name):
             if not re.search(r"\d", rest) and not label:
                 continue
             room_label = re.search(r"venue|room|lab|hall|location|centre|center", label, re.I)
-            keep.append(rest if not label or room_label else f"{label}: {rest}")
-        seat = " · ".join(keep)[:60]
+            keep.append((not room_label, rest if not label or room_label else f"{label}: {rest}"))
+        seat = " · ".join(v for _, v in sorted(keep, key=lambda k: k[0]))[:60]  # the room first, then the seat
         return seat or "listed (room not shown)"
     return None
 
@@ -680,7 +701,25 @@ def fetch_rows(url):
         rows = csv_rows(data)
     else:
         raise ValueError("not a PDF, spreadsheet or CSV")
-    return rows
+    return with_sections(rows)
+
+
+SECTION = re.compile(r"^(?:venue|room|hall|lab|location|centre|center)\b[^:]{0,20}:\s*(\S.{0,40})$", re.I)
+
+
+def with_sections(rows):
+    """Sheets that list students under a heading ("Venue: LA 202") get that room added to each row below it."""
+    out, room = [], None
+    for header, cells in rows:
+        line = " ".join(cells).strip()
+        m = SECTION.match(line) if not ROLL_LIKE.search(line) else None
+        if m:
+            room = m.group(1).strip()
+        elif room:
+            out.append(((header or [""] * len(cells)) + ["Venue"], cells + [room]))
+            continue
+        out.append((header, cells))
+    return out
 
 
 def fetch_seat(url, me):
@@ -725,7 +764,7 @@ def update_seats(state, jobs, job_list, notify=True, fresh_ids=()):
                 ev = ahead[0] if ahead else None
                 when_line = f"\n{ev['icon']} {ev['kind']} {when(ev['at'])} ({until(ev['at'])})" if ev else ""
                 if rec["found"]:
-                    msgs.append(f"💺 *{company}*: your room is *{rec['seat']}*"
+                    msgs.append(f"💺 *{company}*: your seat is *{rec['seat']}*"
                                 + (" (updated)" if old and old.get("found") else "") + f"{when_line}\n{url}")
                 elif old is None or old.get("found"):
                     msgs.append(f"💺 *{company}*: your roll number isn't in the seating sheet. Check it yourself:{when_line}\n{url}")
@@ -826,7 +865,7 @@ def extract_events(posts, jobs):
 def describe_post(p, jobs, seat=None):
     """One short line built from the title and event time (and your room, when the seating sheet is known)."""
     company = company_of(p, jobs)
-    room = f" · 💺 Your room: *{seat}*" if seat else ""
+    room = f" · 💺 Your seat: *{seat}*" if seat else ""
     if p.get("mentionsMe"):
         if re.search(r"shortlist", p["title"], re.I):
             return f"🎉 You're on the *{company}* shortlist! ({p['title']})"
@@ -938,6 +977,25 @@ def send_telegram(text, cfg):
     with urllib.request.urlopen(req, timeout=30) as r:
         if not json.load(r).get("ok"):
             raise RuntimeError("Telegram refused the message")
+    log_sent("telegram", text)
+
+
+def log_sent(to, text):
+    """Keeps what was sent (to check later what went out); never breaks sending."""
+    try:
+        fd = os.open(SENT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps({"at": iso(now()), "to": to, "text": text}, ensure_ascii=False) + "\n")
+        if SENT_LOG.stat().st_size > SENT_LOG_MAX:
+            # shortcut: a line appended by the other process during this trim can be lost; fine for a log.
+            lines = SENT_LOG.read_text().splitlines(keepends=True)
+            save_text = "".join(lines[len(lines) // 2:])
+            tmp = SENT_LOG.with_name(f".sent.{os.getpid()}.tmp")
+            tmp.write_text(save_text)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, SENT_LOG)
+    except OSError as e:
+        print(f"sent log: {e}", file=sys.stderr)
 
 
 def chunks(text, size):
@@ -1126,6 +1184,7 @@ def read_blog(state, me, jar, first_run, full=False):
     known = {p["id"]: p for p in state.get("posts", [])}
     old_ids = set(known)
     fresh, edited, seen = [], [], set()
+    versions = state.get("postVersions") or {}  # {post id: versions already seen}
     last_date = ""
     for page in range(1, MAX_PAGES + 1):
         res = first if page == 1 else get(f"{BLOG_URL}?paged={page}")
@@ -1137,7 +1196,12 @@ def read_blog(state, me, jar, first_run, full=False):
             if old is None:
                 fresh.append(p)
             elif not first_run and (old["title"], old["text"]) != (p["title"], p["text"]):
-                edited.append((old, p))
+                # A post flipping back and forth (the blog serving two versions) is reported once, not every sync.
+                # shortcut: a real edit back to an earlier version isn't reported either.
+                seen_v = versions.setdefault(p["id"], [post_version(old)])
+                if post_version(p) not in seen_v:
+                    edited.append((old, p))
+                    versions[p["id"]] = (seen_v + [post_version(p)])[-5:]
             seen.add(p["id"])
             known[p["id"]] = p
         # Posts get edited after they go up (a draft first, the real title and job codes later): re-read 2 days back.
@@ -1153,6 +1217,7 @@ def read_blog(state, me, jar, first_run, full=False):
             gone = []
         for p in gone:
             known.pop(p["id"])
+    state["postVersions"] = {i: v for i, v in versions.items() if i in known}
     return {"known": known, "fresh": fresh, "edited": edited, "gone": gone if not first_run else []}
 
 
@@ -1333,7 +1398,8 @@ def mark_sent(state, post_id, at, hours):
     """A message that already says a time: the reminders for the window we're in would repeat it."""
     if at and parse_iso(at) > now():
         left = (parse_iso(at) - now()).total_seconds() / 3600
-        state.setdefault("remindersSent", []).extend(f"ev:{post_id}:{at}:{h}" for h in hours if h >= left)
+        sent = state.setdefault("remindersSent", [])
+        sent.extend(k for h in hours if h >= left and (k := f"ev:{post_id}:{at}:{h}") not in sent)
 
 
 def edit_line(old, new, jobs):
