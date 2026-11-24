@@ -255,6 +255,13 @@ def test_ai_finds_posts_of_any_date_or_company():
     assert jaf_ai.search_posts("what is up", posts) == []
 
 
+def test_why_a_post_names_you():
+    m = J.mention_test(ME)
+    assert m("Shortlist: 99X0001, 99x9999") == "your roll number is in the post"
+    assert m("Selected: TEST  student") == "your full name is in the post"
+    assert m("Selected: Test Studentson, 99X99990") is None
+
+
 def test_taken_down_posts_but_never_old_ones():
     live = blog_posts(30)
     saved = [dict(p) for p in live] + blog_posts(60)[30:]  # 30 older posts beyond the pages the blog still shows

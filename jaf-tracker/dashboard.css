@@ -470,3 +470,7 @@ html, body { overscroll-behavior-x: none; }
 html, body { overflow-x: clip; }
 /* Keep the first child's margin inside #views, so the swipe preview lines up exactly with the page */
 #views { display: flow-root; }
+.statbtn { all: unset; display: block; cursor: pointer; border-radius: 12px; }
+.statbtn:hover .stat { border-color: var(--good); }
+.statbtn:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
+.why { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--good-soft); color: var(--good); font-weight: 600; font-size: 13px; }

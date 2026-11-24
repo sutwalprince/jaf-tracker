@@ -306,13 +306,14 @@ def html_to_text(s, links=False):
 
 
 def mention_test(me):
+    """text -> why it names you ("your roll number is in the post"), or None."""
     pats = []
     if me.get("roll"):
-        pats.append(re.compile(rf"\b{re.escape(me['roll'])}\b", re.I))
+        pats.append((re.compile(rf"\b{re.escape(me['roll'])}\b", re.I), "your roll number is in the post"))
     name = (me.get("name") or "").strip()
     if " " in name:
-        pats.append(re.compile(r"\s+".join(map(re.escape, name.split())), re.I))
-    return lambda text: any(p.search(text) for p in pats)
+        pats.append((re.compile(r"\b" + r"\s+".join(map(re.escape, name.split())) + r"\b", re.I), "your full name is in the post"))
+    return lambda text: next((why for p, why in pats if p.search(text)), None)
 
 
 PROGRAMMES = re.compile(r"(?<![A-Za-z])(?:MS\s*\(\s*R\s*\)|M\.?\s?Tech|B\.?\s?Tech|Ph\.?\s?D|MBA|M\.?\s?Sc|M\.?\s?Des|B\.?\s?Des|"
@@ -351,7 +352,8 @@ def parse_blog(page, me):
             "link": html.unescape(title.group(1)) if title else BLOG_URL,
             "title": html_to_text(title.group(2)) if title else "(untitled)",
             "text": text if len(text) <= TEXT_LIMIT else text[:TEXT_LIMIT] + "\n…",
-            "mentionsMe": mentions(text),
+            "mentionsMe": bool(why := mentions(text)),
+            "mentionWhy": why,
             "forOthers": for_other_programme(text, me),
         })
     return posts
@@ -847,6 +849,8 @@ def check_lists(state, posts, jobs, fresh_ids=(), notify=True):
     for p in posts:
         if p["id"] in yes:
             p["mentionsMe"] = True
+            sheet = "seating sheet" if seat_links(p) and not LIST_TITLE.search(p["title"]) else "list"
+            p["mentionWhy"] = p.get("mentionWhy") or f"your roll number is in the {sheet} linked in this post"
     if hide:
         save(HIDDEN, sorted(hidden_companies() | hide), private=True)
     if msgs:

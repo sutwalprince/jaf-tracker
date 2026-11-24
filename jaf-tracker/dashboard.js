@@ -118,7 +118,8 @@ function render() {
   $('stats').innerHTML = [
     stat(['JAFs signed', 'Signed'], all.length, `${new Set(all.map(j => j.company)).size} companies${hidden.size ? `, ${hidden.size} hidden` : ''}`),
     stat(['Unread updates', 'Unread'], unread, `${posts.length} total`),
-    stat(['Mentions you', 'Mentions'], mentions, 'shortlists & lists with your roll/name', mentions > 0),
+    `<button class="statbtn" data-filter="mentions" title="Show the posts that name you, and why">${
+      stat(['Mentions you', 'Mentions'], mentions, 'shortlists & lists with your roll/name · tap to see', mentions > 0)}</button>`,
   ].join('');
 
   // Upcoming tests / PPTs / interviews (read from blog posts)
@@ -137,6 +138,7 @@ function render() {
   const pptCount = posts.filter(p => PPT_TITLE.test(p.title)).length;
   $('chips').innerHTML = [`<button class="chip ${filterJob ? '' : 'on'}" data-filter="">All</button>`,
     pptCount ? `<button class="chip ${filterJob === 'ppt' ? 'on' : ''}" data-filter="ppt">🎤 PPTs (${pptCount})</button>` : '',
+    mentions ? `<button class="chip ${filterJob === 'mentions' ? 'on' : ''}" data-filter="mentions">🎉 Mentions you (${mentions})</button>` : '',
     ...companies.map(([c, id]) => {
       const ids = jobs.filter(j => j.company === c).map(j => j.id);
       const on = filterJob && ids.includes(filterJob);
@@ -144,12 +146,13 @@ function render() {
     })].join('');
 
   // Feed
-  const selected = filterJob && filterJob !== 'ppt' ? jobs.filter(j => j.company === byId[filterJob]?.company).map(j => j.id) : null;
+  const selected = filterJob && typeof filterJob === 'number' ? jobs.filter(j => j.company === byId[filterJob]?.company).map(j => j.id) : null;
   // Unread-only keeps a post you've just opened on screen until you close it.
   const shown = posts.filter(p =>
     (!unreadOnly || !read.has(p.id) || expanded.has(p.id)) &&
     (!selected || p.jobIds.some(id => selected.includes(id))) &&
     (filterJob !== 'ppt' || PPT_TITLE.test(p.title)) &&
+    (filterJob !== 'mentions' || p.mentionsMe) &&
     (!q || `${p.title} ${p.text}`.toLowerCase().includes(q)));
   $('feedCount').textContent = `(${shown.length})`;
   let lastDay = null; // a heading before each day's posts
@@ -217,10 +220,16 @@ function postHtml(p, byId, read) {
         <span class="meta"><span class="kind ${done ? 'k-done' : kcls}">${esc(kind)}${done ? ' · ✓ Done' : ''}</span>${seat ? `<span class="seat">💺 ${esc(seat)}</span>` : ''}${cos.length ? `<span class="co">${esc(cos.join(', '))}</span>` : ''}<span class="time">${esc(timeOf(p.date))}</span></span>
         <span class="title">${esc(cleanTitle(p.title, fullNames))}</span>
       </span>
-      ${p.mentionsMe ? '<span class="badge">Mentions you</span>' : ''}
+      ${p.mentionsMe ? `<span class="badge" title="${esc(mentionWhy(p))}">Mentions you</span>` : ''}
     </button>
-    ${open ? `<div class="body"><pre>${linkify(p.text)}</pre><a href="${esc(p.link)}" target="_blank" rel="noopener">Open on blog ↗</a></div>` : ''}
+    ${open ? `<div class="body">${p.mentionsMe ? `<p class="why">🎉 Names you: ${esc(mentionWhy(p))}${
+      /linked/.test(mentionWhy(p)) ? ' (open the list from the link below)' : ''}.</p>` : ''}<pre>${linkify(p.text)}</pre><a href="${esc(p.link)}" target="_blank" rel="noopener">Open on blog ↗</a></div>` : ''}
   </article>`;
+}
+
+// Why a post names you: the server says (roll number or name in the post, or in its linked list).
+function mentionWhy(p) {
+  return p.mentionWhy || 'your roll number or name is in the post';
 }
 
 function jobHtml(j, ups, selected, isHidden, next) {
@@ -286,7 +295,7 @@ document.addEventListener('click', e => {
   }
   const f = e.target.closest('[data-filter]');
   if (f) {
-    const id = f.dataset.filter === 'ppt' ? 'ppt' : f.dataset.filter ? Number(f.dataset.filter) : null;
+    const id = ['ppt', 'mentions'].includes(f.dataset.filter) ? f.dataset.filter : f.dataset.filter ? Number(f.dataset.filter) : null;
     if (view === 'jafs') { filterJob = id; location.hash = 'updates'; return; } // jump to that company's updates
     filterJob = filterJob === id ? null : id;
     render();

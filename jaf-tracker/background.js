@@ -96,7 +96,7 @@ function mentionTest(me) {
   const res = [];
   if (me.roll) res.push(new RegExp(`\\b${me.roll}\\b`, 'i'));
   if (me.name && me.name.trim().includes(' ')) {
-    res.push(new RegExp(me.name.trim().split(/\s+/).join('\\s+'), 'i'));
+    res.push(new RegExp(`\\b${me.name.trim().split(/\s+/).join('\\s+')}\\b`, 'i'));
   }
   return text => res.some(re => re.test(text));
 }
@@ -409,8 +409,15 @@ async function pullServerTimes() {
   if (!res.ok) return;
   const d = await res.json();
   if (!d.lastSync) return;
+  // Lists naming you only in a linked sheet, and posts only for another programme: only the server reads those.
+  const mentions = new Map((d.posts || []).filter(p => p.mentionsMe).map(p => [p.id, p.mentionWhy]));
+  const others = new Set((d.posts || []).filter(p => p.forOthers).map(p => p.id));
+  const { posts } = await chrome.storage.local.get('posts');
   await chrome.storage.local.set({ events: d.events || [], postEvents: d.postEvents || {},
-    postActions: d.postActions || {}, postSeats: d.postSeats || {} });
+    postActions: d.postActions || {}, postSeats: d.postSeats || {},
+    posts: (posts || []).map(p => ({ ...p, mentionsMe: p.mentionsMe || mentions.has(p.id),
+      mentionWhy: mentions.get(p.id) || p.mentionWhy, forOthers: others.has(p.id) })) });
+  await updateBadge();
 }
 
 // A fresh SSO login (e.g. you logged in to the blog) is sent straight away.
